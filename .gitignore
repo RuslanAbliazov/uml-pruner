@@ -1,0 +1,10 @@
+*_env/
+configs/
+data/
+diagrams/
+full_diagrams_fixed_generic/
+logs/
+*__pycache__
+
+opencode.json
+.DS_Store

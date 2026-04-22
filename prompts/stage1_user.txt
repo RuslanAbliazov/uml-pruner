@@ -1,0 +1,16 @@
+User Query: "{query}"
+
+Packages in this batch ({batch_idx}/{total_batches}):
+{packages_text}
+
+Task: For each package above, classify its relevance to the query as one of:
+- HIGH: package almost certainly contains classes that answer the query
+- MEDIUM: package may contain helpful supporting classes
+- LOW: unlikely to be relevant
+- NONE: definitely not relevant
+
+Return JSON in exactly this shape (only include packages rated HIGH or MEDIUM):
+{{
+  "high": ["full.package.name", ...],
+  "medium": ["full.package.name", ...]
+}}

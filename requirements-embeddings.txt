@@ -1,0 +1,11 @@
+# Optional dependencies for local embedding-based Stage 1 retrieval.
+# Install with:  pip install -r requirements-embeddings.txt
+#
+# Heavy (~3 GB once PyTorch is installed). Keep separate from the core
+# requirements.txt so that users who only want the LLM pipeline don't need
+# to install them.
+
+sentence-transformers>=3.0.0
+torch>=2.3.0
+einops>=0.7.0          # required by nomic-embed-text-v1.5
+numpy>=1.24.0

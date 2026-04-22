@@ -1,0 +1,93 @@
+{
+  "nodes": [
+    {
+      "type": "interface",
+      "name": "observer.Observer",
+      "node_id": "observer.Observer",
+      "methods": [
+        "public onPriceUpdate(String stockSymbol, double oldPrice, double newPrice)"
+      ],
+      "description": "Any component interested in stock price changes"
+    },
+    {
+      "type": "interface",
+      "name": "observer.Observable",
+      "node_id": "observer.Observable",
+      "methods": [
+        "public addObserver(Observer o)",
+        "public removeObserver(Observer o)",
+        "public notifyObservers(String symbol, double oldPrice, double newPrice)"
+      ],
+      "description": "Anything that can be watched by observers"
+    },
+    {
+      "type": "class",
+      "name": "observer.Stock",
+      "node_id": "observer.Stock",
+      "methods": [
+        "public Stock(String symbol, double initialPrice)",
+        "public setPrice(double newPrice)",
+        "public getPrice()",
+        "public getSymbol()",
+        "public addObserver(Observer o)",
+        "public removeObserver(Observer o)",
+        "public notifyObservers(String sym, double oldPrice, double newPrice)"
+      ],
+      "description": "A single tracked stock; notifies observers on price change"
+    },
+    {
+      "type": "class",
+      "name": "observer.StockBroker",
+      "node_id": "observer.StockBroker",
+      "methods": [
+        "public StockBroker(String brokerName)",
+        "public onPriceUpdate(String symbol, double oldPrice, double newPrice)"
+      ],
+      "description": "Logs every price movement"
+    },
+    {
+      "type": "class",
+      "name": "observer.PriceAlert",
+      "node_id": "observer.PriceAlert",
+      "methods": [
+        "public PriceAlert(String alertName, double threshold, boolean alertAbove)",
+        "public onPriceUpdate(String symbol, double oldPrice, double newPrice)"
+      ],
+      "description": "Fires an alert when price crosses a threshold"
+    },
+    {
+      "type": "class",
+      "name": "observer.StockMarket",
+      "node_id": "observer.StockMarket",
+      "methods": [
+        "public addStock(Stock stock)",
+        "public getStock(String symbol)",
+        "public updatePrice(String symbol, double newPrice)",
+        "public printAll()"
+      ],
+      "description": "Central registry of all tracked stocks"
+    },
+    {
+      "type": "class",
+      "name": "observer.Main",
+      "node_id": "observer.Main",
+      "methods": [
+        "public static main(String[] args)"
+      ],
+      "description": "Entry point — demo of the Observer pattern"
+    }
+  ],
+  "edges": [
+    { "node_id_from": "observer.Stock",        "node_id_to": "observer.Observable",   "description": "Inheritance", "subdescription": "Implements" },
+    { "node_id_from": "observer.StockBroker",  "node_id_to": "observer.Observer",     "description": "Inheritance", "subdescription": "Implements" },
+    { "node_id_from": "observer.PriceAlert",   "node_id_to": "observer.Observer",     "description": "Inheritance", "subdescription": "Implements" },
+    { "node_id_from": "observer.Stock",        "node_id_to": "observer.Observer",     "description": "Association", "subdescription": "HAS_MANY",         "label": "observers" },
+    { "node_id_from": "observer.StockMarket",  "node_id_to": "observer.Stock",        "description": "Association", "subdescription": "HAS_MANY",         "label": "stocks" },
+    { "node_id_from": "observer.StockMarket",  "node_id_to": "observer.Stock",        "description": "Dependency",  "subdescription": "PARAMETER_TYPE",   "label": "updatePrice" },
+    { "node_id_from": "observer.Main",         "node_id_to": "observer.StockMarket",  "description": "Dependency",  "subdescription": "LOCAL_VARIABLE_TYPE", "label": "main" },
+    { "node_id_from": "observer.Main",         "node_id_to": "observer.Stock",        "description": "Dependency",  "subdescription": "LOCAL_VARIABLE_TYPE", "label": "main" },
+    { "node_id_from": "observer.Main",         "node_id_to": "observer.StockBroker",  "description": "Dependency",  "subdescription": "LOCAL_VARIABLE_TYPE", "label": "main" },
+    { "node_id_from": "observer.Main",         "node_id_to": "observer.PriceAlert",   "description": "Dependency",  "subdescription": "LOCAL_VARIABLE_TYPE", "label": "main" },
+    { "node_id_from": "observer.Observable",   "node_id_to": "observer.Observer",     "description": "Dependency",  "subdescription": "PARAMETER_TYPE",   "label": "addObserver" }
+  ]
+}

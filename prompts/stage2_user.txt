@@ -1,0 +1,15 @@
+User Query: "{query}"
+
+Classes in this batch ({batch_idx}/{total_batches}):
+{classes_json}
+
+Task: For each class above, decide if it is REQUIRED, USEFUL, or IRRELEVANT to answer the query.
+- REQUIRED: directly answers the query — central to the explanation
+- USEFUL: provides important supporting context (e.g. parent class, collaborator, used type)
+- IRRELEVANT: not needed
+
+Return JSON in exactly this shape (only include REQUIRED and USEFUL classes, use the full node_id):
+{{
+  "required": ["full.node.id.1", ...],
+  "useful": ["full.node.id.2", ...]
+}}
