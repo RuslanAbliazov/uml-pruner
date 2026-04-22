@@ -142,6 +142,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable filtering by non-empty annotations.",
     )
+    parser.add_argument(
+        "--no-merge",
+        action="store_true",
+        help="Disable merging annotations from multiple annotators (treat each row as separate sample).",
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
@@ -362,6 +367,7 @@ def main() -> None:
         args.annotations,
         finalized_only=not args.no_finalized_filter,
         annotated_only=not args.no_annotation_filter,
+        merge_annotators=not args.no_merge,
     )
     if args.project:
         samples = [s for s in samples if s.project == args.project]

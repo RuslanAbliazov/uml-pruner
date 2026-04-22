@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +61,21 @@ def infer_diagram_filename(central_node: str) -> str:
         if pattern in lower:
             return fname
     return ""
+
+
+def _generate_sample_id(central_node: str, query: str) -> str:
+    """Generate a deterministic sample_id from central_node and query.
+
+    Args:
+        central_node: The central node class path.
+        query: The user query.
+
+    Returns:
+        A short hash-based ID (first 12 chars of sha256 hex).
+    """
+    content = f"{central_node}||{query}"
+    hash_obj = hashlib.sha256(content.encode("utf-8"))
+    return hash_obj.hexdigest()[:12]
 
 
 def _parse_annotations_field(raw: str) -> dict[str, str]:
@@ -134,13 +150,19 @@ def load_annotations(
         samples = []
         for row in raw_rows:
             central_node = row.get("central_node", "") or ""
+            query = row.get("query", "")
+            # Generate sample_id if not present or empty
+            sample_id = row.get("sample_id", "") or row.get("_id", "")
+            if not sample_id:
+                sample_id = _generate_sample_id(central_node, query)
+
             samples.append(
                 AnnotationSample(
-                    sample_id=row.get("sample_id", "") or row.get("_id", ""),
+                    sample_id=sample_id,
                     task_id=row.get("task_id", ""),
                     annotator=row.get("annotator", ""),
                     central_node=central_node,
-                    query=row.get("query", ""),
+                    query=query,
                     annotations=row["_parsed_annotations"],
                     status=row.get("status", ""),
                     project=infer_project(central_node),
@@ -152,7 +174,12 @@ def load_annotations(
     # Group by sample_id and merge
     by_sid: dict[str, list[dict[str, Any]]] = {}
     for row in raw_rows:
+        central_node = row.get("central_node", "") or ""
+        query = row.get("query", "")
+        # Generate sample_id if not present or empty
         sid = row.get("sample_id", "") or row.get("_id", "")
+        if not sid:
+            sid = _generate_sample_id(central_node, query)
         by_sid.setdefault(sid, []).append(row)
 
     samples: list[AnnotationSample] = []
