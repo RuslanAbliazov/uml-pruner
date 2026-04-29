@@ -132,6 +132,7 @@ def _index_one(
         nodes,
         max_methods=text_opts["max_methods"],
         max_description_chars=text_opts["max_description_chars"],
+        max_fields=text_opts["max_params"]
     )
     node_ids = [n["node_id"] for n in nodes]
 
@@ -196,6 +197,7 @@ def main() -> None:
             emb_cfg.get("max_description_chars") if emb_cfg else None
         )
         or 500,
+        "max_params": (emb_cfg.get("max_params_per_node") if emb_cfg else None) or 15
     }
 
     diagrams_dir = Path(

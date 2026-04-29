@@ -31,16 +31,18 @@ def _clean_method(method: str) -> str:
 
 def node_to_text(
     node: dict[str, Any],
-    max_methods: int = 15,
-    max_description_chars: int = 500,
+    max_methods: int = 30,
+    max_description_chars: int = 4000,
+    max_fields: int = 30,
 ) -> str:
     """Serialize a single node into a text document suitable for embedding.
 
     Args:
         node: Node dict with at least 'node_id'. May also have 'type',
-              'description', 'methods'.
+              'description', 'methods', 'params'.
         max_methods: Truncate method list to this many entries.
         max_description_chars: Truncate description to this many chars.
+        max_fields: Truncate field list to this many entries.
 
     Returns:
         A multi-line string representation. Stable across runs.
@@ -54,6 +56,9 @@ def node_to_text(
           - getExternalProgramName
           - getLabel
           - getAddress
+        Fields:
+          - private static final Logger log
+          - private SentenceGenerator sentenceGenerator
     """
     node_id = node.get("node_id", "")
     short = _short_name(node_id)
@@ -65,36 +70,57 @@ def node_to_text(
         f"Type: {node_type}",
     ]
 
-    description = (node.get("description") or "").strip()
-    if description:
-        if len(description) > max_description_chars:
-            description = description[: max_description_chars - 3] + "..."
-        # collapse internal newlines to keep the doc compact
-        description = " ".join(description.split())
-        lines.append(f"Description: {description}")
+    # it is unfair to put description to RAG
+    # description = (node.get("description") or "").strip()
+    # if description:
+    #     if len(description) > max_description_chars:
+    #         description = description[: max_description_chars - 3] + "..."
+    #     # collapse internal newlines to keep the doc compact
+    #     description = " ".join(description.split())
+    #     lines.append(f"Description: {description}")
 
     methods = node.get("methods") or []
+    i = 0
     if methods:
         lines.append("Methods:")
-        for m in methods[:max_methods]:
+        for m in methods:
             cleaned = _clean_method(m)
+            if "get" in cleaned.lower() or "set" in cleaned.lower():
+                continue
+
+            if cleaned == short:
+                continue
+
             if cleaned:
                 lines.append(f"  - {cleaned}")
-        if len(methods) > max_methods:
-            lines.append(f"  - ... ({len(methods) - max_methods} more)")
+                i += 1
+
+            if i > max_methods:
+                lines.append(f"  - ...  more)")
+
+    fields = node.get("params") or []
+    if fields:
+        lines.append("Fields:")
+        for f in fields[:max_fields]:
+            cleaned = f.strip()
+            if cleaned:
+                lines.append(f"  - {cleaned}")
+        if len(fields) > max_fields:
+            lines.append(f"  - ... more)")
 
     return "\n".join(lines)
 
 
 def nodes_to_texts(
     nodes: list[dict[str, Any]],
-    max_methods: int = 15,
-    max_description_chars: int = 500,
+    max_methods: int = 30,
+    max_description_chars: int = 4000,
+    max_fields: int = 30,
 ) -> list[str]:
     """Serialize many nodes. Order is preserved."""
     return [
         node_to_text(
-            n, max_methods=max_methods, max_description_chars=max_description_chars
+            n, max_methods=max_methods, max_description_chars=max_description_chars, max_fields=max_fields
         )
         for n in nodes
     ]

@@ -3,6 +3,7 @@ configs/
 data/
 diagrams/
 full_diagrams_fixed_generic/
+uml_with_methods/
 logs/
 *__pycache__
 
