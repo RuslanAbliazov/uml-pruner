@@ -133,10 +133,18 @@ class AnchorNeighborsRunner:
 
 
 def _diagram_stem(inputs: ApproachInputs) -> str:
-    """Repo basename used to locate ``data/embeddings/<stem>``."""
-    if inputs.repo and "/" in inputs.repo:
-        return inputs.repo.split("/", 1)[1]
-    return inputs.repo or ""
+    """Filename stem (without extension) used to locate the embedding index.
+
+    Mirrors the logic the benchmark uses to load the matching diagram, so
+    ``data/embeddings/<stem>/`` always corresponds to the diagram fed in.
+    """
+    # Local import to avoid pulling eval/ on cold runner construction.
+    from src.eval.annotations import diagram_filename_for_repo
+
+    fname = diagram_filename_for_repo(inputs.repo or "")
+    if fname.endswith(".json"):
+        fname = fname[:-5]
+    return fname
 
 
 def _empty(*, reason: str, metadata: dict) -> ApproachResult:
