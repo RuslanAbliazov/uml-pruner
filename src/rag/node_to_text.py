@@ -119,12 +119,12 @@ _RELATION_ORDER = ("Inheritance", "Association", "Dependency")
 # Section header per (relation, direction) combo. Inheritance gets bespoke
 # wording because "extends/implements" reads better than "outgoing inheritance".
 _SECTION_HEADERS = {
-    ("Inheritance", "out"): "Inheritance: extends/implements",
-    ("Inheritance", "in"): "Inheritance: extended/implemented by",
-    ("Association", "out"): "Association: outgoing",
-    ("Association", "in"): "Association: incoming",
-    ("Dependency", "out"): "Dependency: outgoing",
-    ("Dependency", "in"): "Dependency: incoming",
+    ("Inheritance", "out"): "Inheritance: Extends/implements",
+    ("Inheritance", "in"): "Inheritance: Extended/implemented by",
+    ("Association", "out"): "Association: To have as a part",
+    ("Association", "in"): "Association: Part of",
+    ("Dependency", "out"): "Dependency: Uses",
+    ("Dependency", "in"): "Dependency: Used by",
 }
 
 
@@ -364,10 +364,10 @@ def nodes_to_texts(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]] | None = None,
     *,
-    max_methods: Optional[int] = 25,
-    max_fields: Optional[int] = 20,
-    max_outgoing_per_relation: Optional[int] = 12,
-    max_incoming_per_relation: Optional[int] = 12,
+    max_methods: Optional[int] = None,
+    max_fields: Optional[int] = None,
+    max_outgoing_per_relation: Optional[int] = None,
+    max_incoming_per_relation: Optional[int] = None,
 ) -> list[str]:
     """Serialize many nodes. Order is preserved.
 
