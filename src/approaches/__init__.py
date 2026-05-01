@@ -42,7 +42,7 @@ def _factory_rag_classes_filter() -> _FactoryFn:
 
 
 def _factory_anchor_neighbors() -> _FactoryFn:
-    from src.approaches.anchor_neighbors.runner import build_runner
+    from src.approaches.anchor_neighbors import build_runner
 
     return build_runner
 

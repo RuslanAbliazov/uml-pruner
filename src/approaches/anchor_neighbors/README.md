@@ -52,15 +52,23 @@ python scripts/build_index.py --all
 
 ## Run
 
+The approach has its own CLI right next to the source:
+
 ```bash
 # Whole dataset
-python scripts/run.py --approach anchor_neighbors
+python src/approaches/anchor_neighbors/run.py
 
 # Restrict to a repo / subset / single sample
-python scripts/run.py --approach anchor_neighbors --repo apache/hadoop
-python scripts/run.py --approach anchor_neighbors --limit 5
-python scripts/run.py --approach anchor_neighbors --sample-id <id>
+python src/approaches/anchor_neighbors/run.py --repo apache/hadoop
+python src/approaches/anchor_neighbors/run.py --limit 5
+python src/approaches/anchor_neighbors/run.py --sample-id <id>
+
+# Skip eval
+python src/approaches/anchor_neighbors/run.py --no-eval
 ```
+
+The generic ``scripts/run.py --approach anchor_neighbors`` works too — both
+share the same factory and produce identical output.
 
 Outputs go to `data/results/anchor_neighbors/` (gitignored):
 
@@ -87,5 +95,22 @@ The retrieval model and cache dir are read from the shared `embeddings:`
 block (same one used by `scripts/build_index.py`).
 
 ## Source layout
-- Runner: `runner.py`
-- Prompts: `prompts/select_{system,user}.txt`, `prompts/prune_{system,user}.txt`
+
+The pipeline is split across small, single-purpose files so each stage is
+easy to read in isolation:
+
+```
+anchor_neighbors/
+├── run.py            # CLI entry point — invoke the approach over the dataset
+├── runner.py         # Orchestrator: glues the four stages into ApproachResult
+├── config.py         # AnchorNeighborsConfig + build_runner factory
+├── candidates.py     # Stage 1 — RAG retrieval (CandidateFinder)
+├── select_anchor.py  # Stage 2 — LLM picks one anchor (with fallback)
+├── expand.py         # Stage 3 — collect neighborhood + cap
+├── prune.py          # Stage 4 — LLM REQUIRED / USEFUL / IRRELEVANT
+├── prompts.py        # Tiny wrappers over ./prompts/*.txt
+├── prompts/
+│   ├── select_{system,user}.txt
+│   └── prune_{system,user}.txt
+└── README.md
+```
