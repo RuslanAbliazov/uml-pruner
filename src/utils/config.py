@@ -54,6 +54,9 @@ class Config:
             return Config(value)
         return value
 
+    def __contains__(self, key: object) -> bool:
+        return key in self._data
+
     def get(self, key: str, default: Any = None) -> Any:
         value = self._data.get(key, default)
         if isinstance(value, dict):

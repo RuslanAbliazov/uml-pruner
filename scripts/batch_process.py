@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""CLI: run the pipeline on every annotated sample in annotations.csv.
+"""CLI: run the pipeline on every sample in the consolidated dataset.
 
-For each sample, locates the correct diagram based on central_node, runs the
-pipeline with the sample's query, and writes '{sample_id}.json' to results_dir.
+Consumes the dataset CSV produced by `scripts/build_dataset.py` (default:
+`data/dataset.csv`). For each sample, looks up the diagram via the row's
+`repo` column, runs the pipeline with the sample's query, and writes
+'{sample_id}.json' to results_dir.
 
 Skips samples whose result file already exists (unless --overwrite).
 """
@@ -20,7 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from src.evaluation.annotations import infer_diagram_filename, load_annotations
+from src.evaluation.annotations import diagram_filename_for_repo, load_dataset
 from src.llm.client import LLMClient
 from src.llm.prompts import set_prompts_dir
 from src.pipeline.pipeline import EmbeddingRetrievalConfig, PipelineConfig, run_pipeline
@@ -32,7 +34,9 @@ from src.utils.logger import setup_logger
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Batch-run the pruning pipeline.")
     parser.add_argument(
-        "--annotations", default="annotations.csv", help="Annotations CSV."
+        "--dataset",
+        default="data/dataset.csv",
+        help="Path to the consolidated dataset CSV (built by build_dataset.py).",
     )
     parser.add_argument(
         "--diagrams-dir",
@@ -54,7 +58,9 @@ def parse_args() -> argparse.Namespace:
         "--limit", type=int, default=0, help="Process at most N samples (0 = all)."
     )
     parser.add_argument(
-        "--project", default="", help="Only process samples of this project (optional)."
+        "--repo",
+        default="",
+        help="Only process samples for this repo slug (e.g. 'apache/hadoop').",
     )
     parser.add_argument(
         "--use-embeddings",
@@ -83,11 +89,9 @@ async def process_all(args: argparse.Namespace) -> None:
     )
     set_prompts_dir(prompts_dir)
 
-    samples = load_annotations(
-        args.annotations, finalized_only=True, annotated_only=True
-    )
-    if args.project:
-        samples = [s for s in samples if s.project == args.project]
+    samples = load_dataset(args.dataset)
+    if args.repo:
+        samples = [s for s in samples if s.repo == args.repo]
     if args.limit:
         samples = samples[: args.limit]
 
@@ -158,10 +162,10 @@ async def process_all(args: argparse.Namespace) -> None:
         if out_file.exists() and not args.overwrite:
             continue
 
-        fname = infer_diagram_filename(sample.central_node)
+        fname = diagram_filename_for_repo(sample.repo)
         if not fname:
             print(
-                f"[skip] Unknown project for {sample.sample_id}: {sample.central_node}"
+                f"[skip] Unknown repo for {sample.sample_id}: {sample.repo}"
             )
             continue
 
@@ -186,7 +190,7 @@ async def process_all(args: argparse.Namespace) -> None:
 
         # Attach annotation-tracking metadata (doesn't affect evaluation)
         result.setdefault("metadata", {})["sample_id"] = sample.sample_id
-        result["metadata"]["project"] = sample.project
+        result["metadata"]["repo"] = sample.repo
         save_diagram(result, out_file)
 
     usage = client.usage_summary()

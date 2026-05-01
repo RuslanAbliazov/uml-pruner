@@ -148,6 +148,56 @@ def build_stage3_user_prompt(
 
 
 # -----------------------------------------------------------------------------
+# Approach #2 — anchor_neighbors: anchor selection + subgraph pruning
+# -----------------------------------------------------------------------------
+
+
+def anchor_select_system_prompt() -> str:
+    return _read_template("anchor_select_system.txt")
+
+
+def build_anchor_select_user_prompt(
+    query: str,
+    candidates: list[dict[str, Any]],
+) -> str:
+    """Render the user prompt for anchor selection.
+
+    Args:
+        query: User query.
+        candidates: List of candidate dicts. Each entry MUST have ``node_id``;
+            ``score``, ``name``, ``type``, ``description`` are optional but
+            help the LLM.
+    """
+    candidates_json = json.dumps(candidates, ensure_ascii=False, indent=2)
+    return _render(
+        "anchor_select_user.txt",
+        query=query,
+        candidates_json=candidates_json,
+    )
+
+
+def anchor_prune_system_prompt() -> str:
+    return _read_template("anchor_prune_system.txt")
+
+
+def build_anchor_prune_user_prompt(
+    query: str,
+    anchor: str,
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> str:
+    subgraph_json = json.dumps(
+        {"nodes": nodes, "edges": edges}, ensure_ascii=False
+    )
+    return _render(
+        "anchor_prune_user.txt",
+        query=query,
+        anchor=anchor,
+        subgraph_json=subgraph_json,
+    )
+
+
+# -----------------------------------------------------------------------------
 # Backwards-compatibility constants (lazy via module __getattr__)
 # -----------------------------------------------------------------------------
 # Stages currently import STAGE{1,2,3}_SYSTEM_PROMPT as module-level constants.

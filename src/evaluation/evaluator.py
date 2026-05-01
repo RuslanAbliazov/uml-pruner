@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.evaluation.annotations import AnnotationSample, load_annotations
+from src.evaluation.annotations import AnnotationSample, load_dataset
 from src.evaluation.metrics import (
     SampleMetrics,
     aggregate_metrics,
@@ -39,27 +39,24 @@ def _predicted_node_ids(result_path: Path) -> set[str]:
 
 
 def evaluate_test_set(
-    annotations_csv: str | Path,
+    dataset_csv: str | Path,
     results_dir: str | Path,
     result_filename_template: str = "{sample_id}.json",
-    finalized_only: bool = True,
 ) -> EvaluationResult:
-    """Evaluate every annotated sample that has a corresponding result file.
+    """Evaluate every sample in the consolidated dataset.
 
     Args:
-        annotations_csv: Path to annotations.csv.
+        dataset_csv: Path to the dataset CSV produced by
+            `scripts/build_dataset.py`.
         results_dir: Directory containing pipeline result JSON files.
         result_filename_template: How result files are named. Uses {sample_id}.
-        finalized_only: Only consider rows with status 'Finalized'.
 
     Returns:
         EvaluationResult with aggregate summary and per-sample metrics.
     """
     results_dir = Path(results_dir)
-    samples = load_annotations(
-        annotations_csv, finalized_only=finalized_only, annotated_only=True
-    )
-    logger.info("Loaded %d annotated samples", len(samples))
+    samples = load_dataset(dataset_csv)
+    logger.info("Loaded %d samples from dataset", len(samples))
 
     per_sample: list[SampleMetrics] = []
     missing: list[str] = []

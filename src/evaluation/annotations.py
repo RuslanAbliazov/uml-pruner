@@ -1,218 +1,168 @@
-"""Load and normalize annotations.csv into structured samples."""
+"""Load the consolidated annotation dataset.
+
+This module ONLY reads a dataset CSV produced by `scripts/build_dataset.py`.
+It does no merging, voting, filtering, or any other data preparation —
+preparation lives exclusively in the build script.
+
+Expected CSV schema:
+    _id, sample_id, task_id, central_node, repo, query, entity_annotations
+
+`entity_annotations` is a JSON string mapping node_id -> "required" | "useful".
+By construction the build script never emits "irrelevant" labels, so the
+in-memory dict only contains required/useful entries.
+"""
 
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+DATASET_FIELDS = (
+    "_id",
+    "sample_id",
+    "task_id",
+    "central_node",
+    "repo",
+    "query",
+    "entity_annotations",
+)
+
+
+# ----------------------------------------------------------------------------
+# Repo -> diagram filename mapping (the only "metadata" we still keep here).
+# Build-time uses the diagram's contents; runtime needs the inverse: given a
+# sample's `repo` field, which JSON file should the pipeline load?
+# ----------------------------------------------------------------------------
+
+_REPO_TO_DIAGRAM = {
+    "apache/hadoop": "hadoop.json",
+    "apache/flink": "flink.json",
+    "NationalSecurityAgency/ghidra": "ghidra.json",
+    "dbeaver/dbeaver": "dbeaver.json",
+    "deeplearning4j/deeplearning4j": "deeplearning4j.json",
+    "Activiti/Activiti": "Activiti.json",
+    "LMAX-Exchange/disruptor": "disruptor.json",
+    "thingsboard/thingsboard": "thingsboard.json",
+}
+
+
+def diagram_filename_for_repo(repo: str) -> str:
+    """Return the diagram filename associated with `repo`.
+
+    Falls back to "<repo-stem>.json" derived from the second path segment of
+    the slug (e.g. "owner/name" -> "name.json"), so unmapped projects still
+    work as long as the diagram file is named after the repo.
+    """
+    if repo in _REPO_TO_DIAGRAM:
+        return _REPO_TO_DIAGRAM[repo]
+    if "/" in repo:
+        return f"{repo.split('/', 1)[1]}.json"
+    return f"{repo}.json"
+
+
+# ----------------------------------------------------------------------------
+# Sample dataclass
+# ----------------------------------------------------------------------------
+
 
 @dataclass
 class AnnotationSample:
-    """One annotated ground-truth sample."""
+    """One consolidated dataset row."""
 
+    _id: str
     sample_id: str
     task_id: str
-    annotator: str
     central_node: str
+    repo: str
     query: str
-    annotations: dict[str, str]  # class_name -> "required" | "useful" | "irrelevant"
-    status: str
-    project: str  # inferred from central_node
-    raw: dict[str, Any]  # original row
+    annotations: dict[str, str]  # node_id -> "required" | "useful"
 
-    def is_annotated(self) -> bool:
-        return bool(self.annotations)
+    @property
+    def diagram_filename(self) -> str:
+        return diagram_filename_for_repo(self.repo)
 
-    def is_finalized(self) -> bool:
-        return self.status.lower() == "finalized"
+    @property
+    def project(self) -> str:
+        """Diagram filename stem (e.g. "hadoop"). Kept for backwards compat."""
+        return Path(self.diagram_filename).stem
 
-
-# Map project name -> diagram filename in full_diagrams_fixed_generic/
-_PROJECT_PATTERNS = [
-    ("hadoop", "hadoop.json"),
-    ("flink", "flink.json"),
-    ("ghidra", "ghidra.json"),
-    ("dbeaver", "dbeaver.json"),
-    ("nd4j", "deeplearning4j.json"),
-    ("deeplearning4j", "deeplearning4j.json"),
-    ("activiti", "Activiti.json"),
-    ("lmax.disruptor", "disruptor.json"),
-    ("thingsboard", "thingsboard.json"),
-]
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "_id": self._id,
+            "sample_id": self.sample_id,
+            "task_id": self.task_id,
+            "central_node": self.central_node,
+            "repo": self.repo,
+            "query": self.query,
+            "entity_annotations": dict(self.annotations),
+        }
 
 
-def infer_project(central_node: str) -> str:
-    """Infer project slug (matching diagram file stem) from a class path."""
-    lower = central_node.lower()
-    for pattern, fname in _PROJECT_PATTERNS:
-        if pattern in lower:
-            return Path(fname).stem
-    return "unknown"
-
-
-def infer_diagram_filename(central_node: str) -> str:
-    """Return the diagram JSON filename corresponding to a central node."""
-    lower = central_node.lower()
-    for pattern, fname in _PROJECT_PATTERNS:
-        if pattern in lower:
-            return fname
-    return ""
-
-
-def _generate_sample_id(central_node: str, query: str) -> str:
-    """Generate a deterministic sample_id from central_node and query.
-
-    Args:
-        central_node: The central node class path.
-        query: The user query.
-
-    Returns:
-        A short hash-based ID (first 12 chars of sha256 hex).
-    """
-    content = f"{central_node}||{query}"
-    hash_obj = hashlib.sha256(content.encode("utf-8"))
-    return hash_obj.hexdigest()[:12]
+# ----------------------------------------------------------------------------
+# Loader
+# ----------------------------------------------------------------------------
 
 
 def _parse_annotations_field(raw: str) -> dict[str, str]:
-    """Parse the entity_annotations column (JSON string)."""
-    if not raw or raw == "{}":
+    if not raw:
         return {}
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        # Fallback: handle possible double-escaped quotes.
-        fixed = raw.replace('""', '"')
-        return json.loads(fixed)
+        return json.loads(raw.replace('""', '"'))
 
 
-# Label priority for union-merging: higher wins
-_LABEL_PRIORITY = {"required": 3, "useful": 2, "irrelevant": 1}
-
-
-def _merge_annotations(dicts: list[dict[str, str]]) -> dict[str, str]:
-    """Union-merge several annotator label dicts.
-
-    For each class, keep the strongest label across annotators:
-    required > useful > irrelevant.
-    """
-    merged: dict[str, str] = {}
-    for d in dicts:
-        for cls, lbl in d.items():
-            prev = merged.get(cls)
-            if prev is None or _LABEL_PRIORITY.get(lbl, 0) > _LABEL_PRIORITY.get(
-                prev, 0
-            ):
-                merged[cls] = lbl
-    return merged
-
-
-def load_annotations(
-    csv_path: str | Path,
-    finalized_only: bool = True,
-    annotated_only: bool = True,
-    merge_annotators: bool = True,
-) -> list[AnnotationSample]:
-    """Load and filter annotation samples from the CSV file.
+def load_dataset(csv_path: str | Path) -> list[AnnotationSample]:
+    """Read the dataset CSV produced by `scripts/build_dataset.py`.
 
     Args:
-        csv_path: Path to annotations.csv.
-        finalized_only: Keep only rows with status == 'Finalized'.
-        annotated_only: Keep only rows with non-empty entity_annotations.
-        merge_annotators: Merge multiple rows sharing the same sample_id by
-            unioning their annotations (label priority: required > useful >
-            irrelevant). If False, return one sample per (sample_id, annotator).
+        csv_path: Path to the consolidated dataset CSV.
 
     Returns:
-        List of AnnotationSample.
+        List of AnnotationSample. The dataset is assumed already filtered,
+        voted, and ready to use; this function does NOT modify it.
     """
     path = Path(csv_path)
     if not path.exists():
-        raise FileNotFoundError(f"Annotations CSV not found: {path}")
-
-    raw_rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            annotations = _parse_annotations_field(row.get("entity_annotations", ""))
-            status = row.get("status", "") or ""
-            if annotated_only and not annotations:
-                continue
-            if finalized_only and status.lower() != "finalized":
-                continue
-            raw_rows.append({**row, "_parsed_annotations": annotations})
-
-    if not merge_annotators:
-        samples = []
-        for row in raw_rows:
-            central_node = row.get("central_node", "") or ""
-            query = row.get("query", "")
-            # Generate sample_id if not present or empty
-            sample_id = row.get("sample_id", "") or row.get("_id", "")
-            if not sample_id:
-                sample_id = _generate_sample_id(central_node, query)
-
-            samples.append(
-                AnnotationSample(
-                    sample_id=sample_id,
-                    task_id=row.get("task_id", ""),
-                    annotator=row.get("annotator", ""),
-                    central_node=central_node,
-                    query=query,
-                    annotations=row["_parsed_annotations"],
-                    status=row.get("status", ""),
-                    project=infer_project(central_node),
-                    raw=row,
-                )
-            )
-        return samples
-
-    # Group by sample_id and merge
-    by_sid: dict[str, list[dict[str, Any]]] = {}
-    for row in raw_rows:
-        central_node = row.get("central_node", "") or ""
-        query = row.get("query", "")
-        # Generate sample_id if not present or empty
-        sid = row.get("sample_id", "") or row.get("_id", "")
-        if not sid:
-            sid = _generate_sample_id(central_node, query)
-        by_sid.setdefault(sid, []).append(row)
+        raise FileNotFoundError(
+            f"Dataset CSV not found: {path}. "
+            f"Run scripts/build_dataset.py first to generate it."
+        )
 
     samples: list[AnnotationSample] = []
-    for sid, rows in by_sid.items():
-        first = rows[0]
-        merged_annotations = _merge_annotations(
-            [r["_parsed_annotations"] for r in rows]
-        )
-        annotators = sorted(
-            {r.get("annotator", "") for r in rows if r.get("annotator")}
-        )
-        central_node = first.get("central_node", "") or ""
-        samples.append(
-            AnnotationSample(
-                sample_id=sid,
-                task_id=first.get("task_id", ""),
-                annotator=",".join(annotators),
-                central_node=central_node,
-                query=first.get("query", ""),
-                annotations=merged_annotations,
-                status=first.get("status", ""),
-                project=infer_project(central_node),
-                raw=first,
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        missing = [c for c in DATASET_FIELDS if c not in (reader.fieldnames or [])]
+        if missing:
+            raise ValueError(
+                f"Dataset CSV {path} is missing required columns: {missing}. "
+                f"Expected: {list(DATASET_FIELDS)}"
             )
-        )
+        for row in reader:
+            samples.append(
+                AnnotationSample(
+                    _id=row["_id"],
+                    sample_id=row["sample_id"],
+                    task_id=row["task_id"],
+                    central_node=row["central_node"],
+                    repo=row["repo"],
+                    query=row["query"],
+                    annotations=_parse_annotations_field(
+                        row.get("entity_annotations", "")
+                    ),
+                )
+            )
     return samples
 
 
-def group_samples_by_project(
+def group_samples_by_repo(
     samples: list[AnnotationSample],
 ) -> dict[str, list[AnnotationSample]]:
-    """Group samples by inferred project."""
+    """Group samples by repo slug."""
     out: dict[str, list[AnnotationSample]] = {}
     for s in samples:
-        out.setdefault(s.project, []).append(s)
+        out.setdefault(s.repo, []).append(s)
     return out

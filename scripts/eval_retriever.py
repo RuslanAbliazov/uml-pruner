@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Evaluate the embedding retriever ALONE (no LLM calls).
 
-For each annotated sample, runs the embedding retriever against the pre-built
-index, and measures how many of the ground-truth 'required' / 'useful' classes
-end up in the top-K candidates.
+For each sample in the consolidated dataset (built by `build_dataset.py`),
+runs the embedding retriever against the pre-built index, and measures how
+many of the ground-truth 'required' / 'useful' classes end up in the top-K
+candidates.
 
 This is the key validation for the embedding-based Stage 1: if recall_required
 is ~1.0 at top-K, we know the retriever is not losing critical classes, and
 the LLM Stage 2 has a chance to find them.
 
 Usage:
-    # Evaluate all annotated samples using the default top-K from config:
+    # Evaluate all samples at the default top-K from config:
     python scripts/eval_retriever.py
 
     # Sweep multiple K values in one run:
@@ -19,16 +20,14 @@ Usage:
     # Only one sample, verbose (to inspect misses):
     python scripts/eval_retriever.py --sample-id <id> --show-misses
 
-    # Only one project:
-    python scripts/eval_retriever.py --project ghidra
+    # Only one repo:
+    python scripts/eval_retriever.py --repo NationalSecurityAgency/ghidra
 
     # Output JSON report:
     python scripts/eval_retriever.py --output data/results/retriever_eval.json
 
-    # Use validation_dataset.csv without 'status' column:
-    python scripts/eval_retriever.py --annotations validation_dataset.csv --no-finalized-filter
-
 Requires:
+    - The dataset CSV to exist (run `python scripts/build_dataset.py` first).
     - An embedding index to exist for every project being evaluated
       (run `python scripts/build_index.py --all` first).
     - Embedding deps installed (`pip install -r requirements-embeddings.txt`).
@@ -51,8 +50,8 @@ from src.embeddings.encoder import EncoderConfig, LocalEncoder
 from src.embeddings.retriever import retrieve_top_k
 from src.evaluation.annotations import (
     AnnotationSample,
-    infer_diagram_filename,
-    load_annotations,
+    diagram_filename_for_repo,
+    load_dataset,
 )
 from src.utils.config import load_config
 from src.utils.io import load_diagram, save_json
@@ -71,7 +70,9 @@ def parse_args() -> argparse.Namespace:
         description="Evaluate the embedding retriever against ground-truth annotations."
     )
     parser.add_argument(
-        "--annotations", default="annotations.csv", help="Annotations CSV path."
+        "--dataset",
+        default="data/dataset.csv",
+        help="Path to the consolidated dataset CSV (built by build_dataset.py).",
     )
     parser.add_argument(
         "--diagrams-dir",
@@ -115,9 +116,9 @@ def parse_args() -> argparse.Namespace:
         help="Evaluate only the sample with this sample_id.",
     )
     parser.add_argument(
-        "--project",
+        "--repo",
         default=None,
-        help="Only evaluate samples from this project (e.g. ghidra, hadoop).",
+        help="Only evaluate samples for this repo slug (e.g. 'apache/hadoop').",
     )
     parser.add_argument(
         "--limit", type=int, default=0, help="Evaluate at most N samples (0 = all)."
@@ -131,21 +132,6 @@ def parse_args() -> argparse.Namespace:
         "--output",
         default=None,
         help="Optional path to write the full JSON report.",
-    )
-    parser.add_argument(
-        "--no-finalized-filter",
-        action="store_true",
-        help="Disable filtering by status='Finalized' (useful for CSVs without status column).",
-    )
-    parser.add_argument(
-        "--no-annotation-filter",
-        action="store_true",
-        help="Disable filtering by non-empty annotations.",
-    )
-    parser.add_argument(
-        "--no-merge",
-        action="store_true",
-        help="Disable merging annotations from multiple annotators (treat each row as separate sample).",
     )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
@@ -181,7 +167,8 @@ def _eval_sample(
     missed_useful = sorted(useful - hits_ids)
     return {
         "sample_id": sample.sample_id,
-        "project": sample.project,
+        "repo": sample.repo,
+        "project": sample.project,  # backwards-compat (diagram stem)
         "k": k,
         "query": sample.query,
         "central_node": sample.central_node,
@@ -230,6 +217,39 @@ def _aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
         1 for r in results if r["required_total"] == 0 or r["recall_required"] == 1.0
     )
 
+    # Per-project breakdown: how many samples have >=1 required class retrieved
+    # (only counting samples that actually have required-labelled classes).
+    by_project: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in results:
+        by_project[r["project"]].append(r)
+
+    project_any_required: dict[str, dict[str, Any]] = {}
+    total_with_req = 0
+    total_hit = 0
+    total_no_req = 0
+    for proj, rows in by_project.items():
+        with_req = [r for r in rows if r["required_total"] > 0]
+        no_req = len(rows) - len(with_req)
+        hit = sum(1 for r in with_req if r["required_found"] >= 1)
+        project_any_required[proj] = {
+            "samples_total": len(rows),
+            "samples_with_required": len(with_req),
+            "samples_without_required": no_req,
+            "samples_with_any_required_hit": hit,
+            "ratio": (hit / len(with_req)) if with_req else 0.0,
+        }
+        total_with_req += len(with_req)
+        total_hit += hit
+        total_no_req += no_req
+
+    overall_any_required = {
+        "samples_total": len(results),
+        "samples_with_required": total_with_req,
+        "samples_without_required": total_no_req,
+        "samples_with_any_required_hit": total_hit,
+        "ratio": (total_hit / total_with_req) if total_with_req else 0.0,
+    }
+
     return {
         "num_samples": len(results),
         "macro_recall_required": mean("recall_required"),
@@ -246,6 +266,8 @@ def _aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
             "useful": tot_use,
             "useful_found": tot_use_found,
         },
+        "any_required_hit_overall": overall_any_required,
+        "any_required_hit_by_project": project_any_required,
     }
 
 
@@ -296,6 +318,32 @@ def _print_summary(
         for proj, rows in sorted(by_project.items()):
             avg = sum(r["recall_required"] for r in rows) / max(len(rows), 1)
             print(f"    {proj:20s} {avg:.4f}   (n={len(rows)})")
+
+    # Per-project: how many samples have at least one required class retrieved.
+    # Samples without any required-labelled classes are excluded from the
+    # denominator since the condition is undefined for them.
+    print()
+    print("  Per-project samples with >=1 required class retrieved:")
+    print(
+        f"    {'project':20s} {'hit':>5s} / {'evaluable':>9s}   {'ratio':>7s}   "
+        f"({'no_req':>6s})"
+    )
+    by_proj_stats = summary.get("any_required_hit_by_project", {})
+    for proj in sorted(by_proj_stats.keys()):
+        s = by_proj_stats[proj]
+        print(
+            f"    {proj:20s} {s['samples_with_any_required_hit']:>5d} / "
+            f"{s['samples_with_required']:>9d}   {s['ratio']:>7.4f}   "
+            f"({s['samples_without_required']:>6d})"
+        )
+    overall = summary.get("any_required_hit_overall", {})
+    if overall:
+        print(
+            f"    {'TOTAL':20s} {overall['samples_with_any_required_hit']:>5d} / "
+            f"{overall['samples_with_required']:>9d}   {overall['ratio']:>7.4f}   "
+            f"({overall['samples_without_required']:>6d})"
+        )
+    print("    (no_req = samples in the project that have 0 required-labelled classes)")
 
 
 def _print_misses(results: list[dict[str, Any]], max_samples: int = 20) -> None:
@@ -362,15 +410,10 @@ def main() -> None:
     k_values = sorted(set(k_values))
     max_k = max(k_values)
 
-    # Load samples
-    samples = load_annotations(
-        args.annotations,
-        finalized_only=not args.no_finalized_filter,
-        annotated_only=not args.no_annotation_filter,
-        merge_annotators=not args.no_merge,
-    )
-    if args.project:
-        samples = [s for s in samples if s.project == args.project]
+    # Load samples (dataset is treated as immutable: no merging or filtering here)
+    samples = load_dataset(args.dataset)
+    if args.repo:
+        samples = [s for s in samples if s.repo == args.repo]
     if args.sample_id:
         samples = [s for s in samples if s.sample_id == args.sample_id]
     if args.limit:
@@ -406,12 +449,13 @@ def main() -> None:
     skipped: list[dict[str, Any]] = []
 
     for sample in samples:
-        fname = infer_diagram_filename(sample.central_node)
+        fname = diagram_filename_for_repo(sample.repo)
         if not fname:
             skipped.append(
                 {
                     "sample_id": sample.sample_id,
-                    "reason": "unknown_project",
+                    "reason": "unknown_repo",
+                    "repo": sample.repo,
                     "central_node": sample.central_node,
                 }
             )

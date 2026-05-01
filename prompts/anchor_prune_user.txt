@@ -1,0 +1,14 @@
+User Query: "{query}"
+
+Anchor: {anchor}
+
+Anchor-centered subgraph (anchor + all its direct neighbors):
+{subgraph_json}
+
+Task: classify every class above as REQUIRED, USEFUL, or IRRELEVANT to answer the query.
+
+Return JSON in exactly this shape (use full node_ids; omit IRRELEVANT classes entirely):
+{{
+  "required": ["full.node.id.1", ...],
+  "useful": ["full.node.id.2", ...]
+}}

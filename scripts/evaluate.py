@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI: evaluate pipeline results against annotations.csv."""
+"""CLI: evaluate pipeline results against the consolidated dataset."""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from src.utils.logger import setup_logger
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate pruning results.")
     parser.add_argument(
-        "--annotations",
-        default="annotations.csv",
-        help="Path to annotations CSV (default: annotations.csv).",
+        "--dataset",
+        default="data/dataset.csv",
+        help="Path to the consolidated dataset CSV (built by build_dataset.py).",
     )
     parser.add_argument(
         "--results-dir",
@@ -37,11 +37,6 @@ def parse_args() -> argparse.Namespace:
         default="data/results/evaluation_report.json",
         help="Where to write the full JSON report.",
     )
-    parser.add_argument(
-        "--include-non-finalized",
-        action="store_true",
-        help="Include samples whose status is not 'Finalized'.",
-    )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
@@ -51,10 +46,9 @@ def main() -> None:
     setup_logger(level="DEBUG" if args.verbose else "INFO")
 
     result = evaluate_test_set(
-        annotations_csv=args.annotations,
+        dataset_csv=args.dataset,
         results_dir=args.results_dir,
         result_filename_template=args.filename_template,
-        finalized_only=not args.include_non_finalized,
     )
 
     report_text = format_summary_report(result)

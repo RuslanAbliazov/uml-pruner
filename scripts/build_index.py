@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 """Build an embedding index for one or more UML diagrams.
 
+The script expects normalized diagrams produced by
+`scripts/normalize_diagrams.py` (default location: `data/diagrams_normalized/`).
+The text representation of each node is graph-aware: it includes the node's
+methods, fields, parent classes/interfaces, outgoing relations (Association /
+Dependency) and incoming relations grouped by kind. See
+`src/embeddings/node_to_text.py` for details.
+
 Usage:
+    # First, normalize the source diagrams once:
+    python scripts/normalize_diagrams.py
+
     # Build index for a single diagram:
-    python scripts/build_index.py --diagram full_diagrams_fixed_generic/disruptor.json
+    python scripts/build_index.py --diagram data/diagrams_normalized/disruptor.json
 
     # Build indices for all diagrams in a directory:
     python scripts/build_index.py --all
@@ -98,6 +108,36 @@ def _resolve_diagrams(args: argparse.Namespace, diagrams_dir: Path) -> list[Path
     return [Path(args.diagram)]
 
 
+# Sentinel used by `_resolve_limit` to distinguish "key absent in config" from
+# "key explicitly set to null".
+_MISSING = object()
+
+
+def _resolve_limit(value, default: int):
+    """Normalize a YAML limit value.
+
+    Rules:
+        - missing / sentinel  -> ``default`` (the script's hard-coded default)
+        - None / null         -> ``None`` (unlimited)
+        - negative int        -> ``None`` (unlimited; ``-1`` is the canonical "off")
+        - non-negative int    -> the int as-is
+
+    Returns either an ``int`` or ``None`` (which the serializer treats as
+    "no truncation").
+    """
+    if value is _MISSING:
+        return default
+    if value is None:
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    if n < 0:
+        return None
+    return n
+
+
 def _index_one(
     diagram_path: Path,
     encoder: LocalEncoder,
@@ -126,13 +166,19 @@ def _index_one(
             )
             return
 
-    # Build texts
-    logger.info("Serializing %d nodes to text...", len(nodes))
+    # Build texts (graph-aware: include relation context from edges).
+    logger.info(
+        "Serializing %d nodes to text (with %d edges of context)...",
+        len(nodes),
+        len(diagram.get("edges", [])),
+    )
     texts = nodes_to_texts(
         nodes,
+        edges=diagram.get("edges", []),
         max_methods=text_opts["max_methods"],
-        max_description_chars=text_opts["max_description_chars"],
-        max_fields=text_opts["max_params"]
+        max_fields=text_opts["max_params"],
+        max_outgoing_per_relation=text_opts["max_outgoing_per_relation"],
+        max_incoming_per_relation=text_opts["max_incoming_per_relation"],
     )
     node_ids = [n["node_id"] for n in nodes]
 
@@ -191,19 +237,34 @@ def main() -> None:
         or (emb_cfg.get("cache_dir") if emb_cfg else None)
         or "data/embeddings"
     )
+    def _emb(key: str):
+        """Fetch ``key`` from the embeddings config, returning ``_MISSING`` if
+        the key is not present (so that ``_resolve_limit`` can distinguish
+        absent vs explicitly-null)."""
+        if not emb_cfg:
+            return _MISSING
+        try:
+            if key in emb_cfg:
+                return emb_cfg.get(key)
+        except TypeError:
+            pass
+        return _MISSING
+
     text_opts = {
-        "max_methods": (emb_cfg.get("max_methods_per_node") if emb_cfg else None) or 15,
-        "max_description_chars": (
-            emb_cfg.get("max_description_chars") if emb_cfg else None
-        )
-        or 500,
-        "max_params": (emb_cfg.get("max_params_per_node") if emb_cfg else None) or 15
+        "max_methods": _resolve_limit(_emb("max_methods_per_node"), default=25),
+        "max_params": _resolve_limit(_emb("max_params_per_node"), default=20),
+        "max_outgoing_per_relation": _resolve_limit(
+            _emb("max_outgoing_per_relation"), default=12
+        ),
+        "max_incoming_per_relation": _resolve_limit(
+            _emb("max_incoming_per_relation"), default=12
+        ),
     }
 
     diagrams_dir = Path(
         args.diagrams_dir
         or (cfg.paths.get("diagrams_dir") if hasattr(cfg, "paths") else None)
-        or "diagrams"
+        or "data/diagrams_normalized"
     )
 
     diagrams = _resolve_diagrams(args, diagrams_dir)
