@@ -14,17 +14,17 @@ and an aggregate evaluation report under
 Example:
 
     # List approaches
-    python scripts/benchmark.py --list
+    python scripts/run.py --list
 
     # Run the baseline approach on the whole dataset, then evaluate
-    python scripts/benchmark.py --approach rag_classes_filter
+    python scripts/run.py --approach rag_classes_filter
 
     # Limit to N samples or one repo
-    python scripts/benchmark.py --approach rag_classes_filter --limit 5
-    python scripts/benchmark.py --approach rag_classes_filter --repo apache/hadoop
+    python scripts/run.py --approach rag_classes_filter --limit 5
+    python scripts/run.py --approach rag_classes_filter --repo apache/hadoop
 
     # Skip evaluation step
-    python scripts/benchmark.py --approach rag_classes_filter --no-eval
+    python scripts/run.py --approach rag_classes_filter --no-eval
 """
 
 from __future__ import annotations
@@ -42,13 +42,12 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 from src.approaches import get_runner, list_approaches
-from src.approaches.base import ApproachInputs
-from src.evaluation.annotations import diagram_filename_for_repo, load_dataset
-from src.evaluation.evaluator import evaluate_test_set, format_summary_report
-from src.llm.prompts import set_prompts_dir
-from src.utils.config import load_config
-from src.utils.io import load_diagram, save_diagram, save_json
-from src.utils.logger import setup_logger
+from src.core.types import ApproachInputs
+from src.eval.annotations import diagram_filename_for_repo, load_dataset
+from src.eval.evaluator import evaluate_test_set, format_summary_report
+from src.core.config import load_config
+from src.core.io import load_diagram, save_diagram, save_json
+from src.core.logger import setup_logger
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,10 +120,6 @@ async def _run(args: argparse.Namespace) -> None:
         level="DEBUG" if args.verbose else cfg.logging.get("level", "INFO"),
         log_file=cfg.logging.get("file", None),
     )
-    prompts_dir = (
-        cfg.paths.get("prompts_dir", "prompts") if hasattr(cfg, "paths") else "prompts"
-    )
-    set_prompts_dir(prompts_dir)
 
     samples = load_dataset(args.dataset)
     if args.repo:

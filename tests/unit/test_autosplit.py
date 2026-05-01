@@ -12,7 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.llm.budget import TokenBudget
 from src.llm.client import ContextOverflowError, LLMClient, LLMResponse
-from src.pipeline.autosplit import (
+from src.approaches.rag_classes_filter.autosplit import (
     AutoSplitStats,
     MaxSplitDepthExceeded,
     process_with_autosplit,

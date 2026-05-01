@@ -12,18 +12,45 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from pathlib import Path
+
 from src.llm.budget import TokenBudget
 from src.llm.client import LLMClient
 from src.llm.parser import parse_json_response
-from src.llm.prompts import build_stage1_user_prompt, stage1_system_prompt
-from src.pipeline.autosplit import (
+from src.llm.prompt_loader import load_prompt, render_prompt
+from src.approaches.rag_classes_filter.autosplit import (
     AutoSplitStats,
     MaxSplitDepthExceeded,
     process_with_autosplit,
 )
-from src.preprocessing.batching import make_batches
-from src.preprocessing.package_grouper import group_by_package, summarize_packages
-from src.utils.logger import get_logger
+from src.approaches._common.batching import make_batches
+from src.approaches._common.package_grouper import group_by_package, summarize_packages
+from src.core.logger import get_logger
+
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+def _stage1_system_prompt() -> str:
+    return load_prompt(_PROMPTS_DIR / "stage1_system.txt")
+
+
+def _build_stage1_user_prompt(
+    query: str,
+    packages: list[dict[str, Any]],
+    batch_idx: int,
+    total_batches: int,
+) -> str:
+    package_lines = []
+    for i, pkg in enumerate(packages, 1):
+        samples = ", ".join(pkg.get("samples", [])[:8])
+        package_lines.append(f"{i}. {pkg['name']} ({pkg['count']} classes) — {samples}")
+    return render_prompt(
+        _PROMPTS_DIR / "stage1_user.txt",
+        query=query,
+        batch_idx=batch_idx,
+        total_batches=total_batches,
+        packages_text="\n".join(package_lines),
+    )
 
 logger = get_logger(__name__)
 
@@ -96,8 +123,8 @@ async def run_stage1(
         # batch_idx / total_batches are informational — we pass (1,1) because
         # within an autosplit tree we're always working on a sub-slice.
         return (
-            stage1_system_prompt(),
-            build_stage1_user_prompt(query, items, 1, 1),
+            _stage1_system_prompt(),
+            _build_stage1_user_prompt(query, items, 1, 1),
         )
 
     semaphore = asyncio.Semaphore(max_parallel)

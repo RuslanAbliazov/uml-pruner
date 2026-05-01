@@ -6,14 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.evaluation.annotations import AnnotationSample, load_dataset
-from src.evaluation.metrics import (
+from src.eval.annotations import AnnotationSample, load_dataset
+from src.eval.metrics import (
     SampleMetrics,
     aggregate_metrics,
     evaluate_sample,
 )
-from src.utils.io import load_diagram
-from src.utils.logger import get_logger
+from src.core.io import load_diagram
+from src.core.logger import get_logger
 
 logger = get_logger(__name__)
 

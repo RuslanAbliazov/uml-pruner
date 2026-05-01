@@ -29,7 +29,7 @@ from typing import Any, Awaitable, Callable, Generic, TypeVar
 
 from src.llm.budget import TokenBudget
 from src.llm.client import ContextOverflowError, LLMClient
-from src.utils.logger import get_logger
+from src.core.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -18,8 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.llm.client import LLMClient, LLMResponse
-from src.pipeline.pipeline import PipelineConfig, run_pipeline
-from src.utils.io import load_diagram
+from src.approaches.rag_classes_filter.pipeline import PipelineConfig, run_pipeline
+from src.core.io import load_diagram
 
 
 def _make_mock_call(diagram):
@@ -61,7 +61,7 @@ async def _run_with_mock(diagram, cfg):
 
 
 async def test_normal_run():
-    diagram_path = PROJECT_ROOT / "full_diagrams_fixed_generic" / "disruptor.json"
+    diagram_path = PROJECT_ROOT / "uml_with_methods" / "disruptor.json"
     diagram = load_diagram(diagram_path)
     cfg = PipelineConfig(
         stage1_batch_size=50,
@@ -92,7 +92,7 @@ async def test_normal_run():
 
 
 async def test_overflow_triggers_autosplit():
-    diagram_path = PROJECT_ROOT / "full_diagrams_fixed_generic" / "disruptor.json"
+    diagram_path = PROJECT_ROOT / "uml_with_methods" / "disruptor.json"
     diagram = load_diagram(diagram_path)
 
     # Tiny window forces autosplit on both Stage 1 and Stage 2.

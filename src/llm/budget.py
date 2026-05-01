@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from src.utils.token_counter import estimate_prompt_tokens_fast
+from src.core.tokens import estimate_prompt_tokens_fast
 
 
 @dataclass

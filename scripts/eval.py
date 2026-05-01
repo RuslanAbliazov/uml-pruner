@@ -10,9 +10,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.evaluation.evaluator import evaluate_test_set, format_summary_report
-from src.utils.io import save_json
-from src.utils.logger import setup_logger
+from src.eval.evaluator import evaluate_test_set, format_summary_report
+from src.core.io import save_json
+from src.core.logger import setup_logger
 
 
 def parse_args() -> argparse.Namespace:

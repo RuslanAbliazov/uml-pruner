@@ -20,14 +20,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.approaches.base import ApproachInputs, ApproachResult
+from src.core.types import ApproachInputs, ApproachResult
 from src.llm.client import LLMClient
-from src.pipeline.pipeline import (
+from src.approaches.rag_classes_filter.pipeline import (
     EmbeddingRetrievalConfig,
     PipelineConfig,
     run_pipeline,
 )
-from src.utils.logger import get_logger
+from src.core.logger import get_logger
 
 NAME = "rag_classes_filter"
 
@@ -47,7 +47,7 @@ class RagClassesFilterConfig:
 
 
 class RagClassesFilterRunner:
-    """Adapter around :func:`src.pipeline.pipeline.run_pipeline`."""
+    """Adapter around :func:`src.approaches.rag_classes_filter.pipeline.run_pipeline`."""
 
     name = NAME
 
@@ -88,7 +88,7 @@ class RagClassesFilterRunner:
 def _diagram_name_for_repo(repo: str) -> str:
     """Convert a repo slug ('apache/hadoop') to its diagram-file stem.
 
-    Mirrors the logic in :mod:`src.evaluation.annotations` but kept private to
+    Mirrors the logic in :mod:`src.eval.annotations` but kept private to
     avoid a circular dependency.
     """
     if "/" in repo:
@@ -101,7 +101,7 @@ def build_runner(cfg: Any | None = None) -> RagClassesFilterRunner:
 
     Falls back to sensible defaults if ``cfg`` is None — useful for tests.
     """
-    from src.utils.config import load_config  # local import to avoid cycles
+    from src.core.config import load_config  # local import to avoid cycles
 
     if cfg is None:
         cfg = load_config("configs/config.yaml")

@@ -11,14 +11,14 @@ classes/interfaces and relations the user actually needs to understand.
 
 Inputs:
 - A user query in natural language.
-- A full UML diagram in JSON form (see `uml.json` for the schema/example).
+- A full UML diagram in JSON form.
 
 Output:
 - A pruned diagram in the same `{nodes, edges}` JSON shape, plus a `metadata`
   block with diagnostic info (original/filtered counts, which IDs are
-  REQUIRED vs USEFUL, which Stage 1 strategy was used, etc).
+  REQUIRED vs USEFUL, per-approach diagnostics, etc).
 
-### UML JSON schema (see `uml.json`)
+### UML JSON schema
 
 ```json
 {
@@ -46,142 +46,157 @@ Output:
 `node_id` is the canonical identifier used everywhere (annotations, results,
 embedding indices). It is typically the fully-qualified class/interface name.
 
-## High-level pipeline
+## Approaches
 
-The pruning pipeline has **two stages**, both protected by an autosplit
-driver that recursively splits batches if a prompt would overflow the LLM
-context window.
-
-### Stage 1 — coarse filter (package level)
-
-Two interchangeable strategies; controlled via config / CLI flags:
-
-1. **LLM Stage 1 (default).** Classes are grouped by Java-style package, then
-   the LLM is asked, batch by batch, which packages are likely to contain
-   classes relevant to the query. Output: a set of surviving `node_id`s.
-   Implemented in `src/pipeline/stage1_coarse.py`.
-2. **Embedding retrieval (opt-in).** A pre-built local vector index of the
-   diagram is loaded; the query is embedded; the top-K most similar nodes are
-   kept. No LLM calls. Falls back to LLM Stage 1 if the index is missing,
-   stale, or returns 0 hits. Implemented in `src/embeddings/*` and wired up in
-   `src/pipeline/pipeline.py:_stage1_via_embeddings`.
-
-### Stage 2 — fine filter (class level)
-
-The surviving classes plus their incident edges are batched and sent to the
-LLM, which classifies each class as one of `REQUIRED`, `USEFUL`, or
-`IRRELEVANT`. Only `REQUIRED` and `USEFUL` are kept. Implemented in
-`src/pipeline/stage2_midlevel.py`.
-
-The final pruned subgraph is built by `src/preprocessing/compressor.py:filter_subgraph`,
-which keeps only the surviving nodes and edges whose endpoints both survived.
-
-### Autosplit / token budget
-
-`src/llm/budget.py` (`TokenBudget`) tracks the LLM context window, output
-reserve, and a safety margin. `src/pipeline/autosplit.py` wraps each stage's
-LLM call so that any batch which won't fit is recursively split in half (up
-to `max_split_depth`). This makes both stages safe for very large diagrams.
-
-## Approaches (benchmark-able)
-
-The project hosts several interchangeable strategies for producing a pruned
-diagram. They share the same input/output contract
-(`src/approaches/base.py::ApproachRunner`) and can be benchmarked uniformly
-via `scripts/benchmark.py`.
+Every approach implements the `ApproachRunner` protocol
+(`src/core/types.py`) and lives in its own self-contained package under
+`src/approaches/<name>/`. Each package owns its runner, prompts, and README.
 
 | #   | Name                  | Status      | Idea                                            |
 |-----|-----------------------|-------------|-------------------------------------------------|
 | 1   | `rag_classes_filter`  | implemented | RAG batch (50–200 cls) → LLM REQUIRED/USEFUL    |
-| 2   | `anchor_neighbors`    | stub        | Pick anchors → expand neighborhood → LLM prune  |
+| 2   | `anchor_neighbors`    | implemented | RAG candidates → LLM picks anchor → 1-hop expand → LLM prune |
 | 3   | `agentic_chunks`      | stub        | Chunk diagram → per-chunk LLM survey → synth    |
 | 4   | `human_like_agent`    | stub        | Anchors → expand by betweenness/calls → prune   |
 
-Each approach has its own user-facing README and runner under
-`scripts/approaches/<name>/`.
+The factory and registry live in `src/approaches/__init__.py`.
+
+### Approach #1 — `rag_classes_filter`
+
+Two stages, both protected by an autosplit driver that recursively splits
+batches if a prompt would overflow the LLM context window.
+
+1. **Stage 1 — coarse filter (package level).** Either
+   - LLM Stage 1: classes are grouped by package; the LLM picks relevant
+     packages batch by batch
+     (`src/approaches/rag_classes_filter/stage1.py`); or
+   - Embedding retrieval (opt-in): a pre-built local vector index returns
+     the top-K most similar nodes (no LLM calls).
+2. **Stage 2 — fine filter (class level).** Surviving classes plus their
+   incident edges are batched and sent to the LLM, which classifies each
+   class as `REQUIRED`, `USEFUL`, or `IRRELEVANT`
+   (`src/approaches/rag_classes_filter/stage2.py`).
+
+The final pruned subgraph is built by
+`src/approaches/_common/compressor.py:filter_subgraph`.
+
+### Approach #2 — `anchor_neighbors`
+
+1. RAG returns top-`n_candidates` classes for the query.
+2. The LLM picks ONE of them as the **anchor**.
+3. All direct neighbors (any direction, any relation kind) are collected.
+4. The LLM classifies the anchor + neighborhood as REQUIRED / USEFUL /
+   IRRELEVANT. The anchor itself is force-kept.
+
+See `src/approaches/anchor_neighbors/README.md` for details.
+
+### Token budget
+
+`src/llm/budget.py::TokenBudget` tracks the LLM context window, output
+reserve, and a safety margin.
+`src/approaches/rag_classes_filter/autosplit.py` wraps each stage's LLM
+call so any batch which won't fit is recursively split in half (up to
+`max_split_depth`). This keeps the baseline pipeline safe for very large
+diagrams.
 
 ## Repository layout
 
 ```
 uml-pruner/
-├── README.md                     # this file
-├── uml.json                      # tiny example diagram (Observer pattern)
+├── README.md
 ├── requirements.txt              # core deps (LLM pipeline only)
 ├── requirements-embeddings.txt   # extra deps for local embedding retrieval
 ├── annotations.csv               # raw human annotations (multi-annotator)
+├── uml_with_methods/             # source diagrams (gitignored, 8 .json files)
 │
 ├── configs/
-│   ├── config.yaml               # main pipeline config (LLM, stages, embeddings, paths)
-│   └── examples/                 # extra example configs
+│   ├── config.yaml               # main config (LLM, stages, embeddings, paths)
+│   └── examples/                 # provider-specific examples
 │
-├── prompts/
-│   ├── stage1_system.txt         # Stage 1 system prompt (package-level filter)
-│   ├── stage1_user.txt           # Stage 1 user-prompt template
-│   ├── stage2_system.txt         # Stage 2 system prompt (REQUIRED/USEFUL classifier)
-│   └── stage2_user.txt           # Stage 2 user-prompt template
+├── data/                         # gitignored: everything generated
+│   ├── dataset.csv               # consolidated dataset
+│   ├── diagrams_normalized/      # normalized diagrams for RAG
+│   ├── embeddings/               # cached embedding indices
+│   └── results/<approach>/       # per-approach run outputs + reports
 │
-├── uml_with_methods/             # source diagrams (full, untouched)
-├── full_diagrams_fixed_generic/  # legacy diagrams (kept for backwards compat)
+├── scripts/                      # ENTRY POINTS — only thin CLI wrappers
+│   ├── normalize_diagrams.py     # uml_with_methods/ -> data/diagrams_normalized/
+│   ├── build_dataset.py          # annotations.csv  -> data/dataset.csv
+│   ├── build_index.py            # build embedding indices
+│   ├── retrieve.py               # RAG: query an index (debug)
+│   ├── eval_retriever.py         # RAG: recall against the dataset
+│   ├── run.py                    # GENERIC: run any approach over the dataset
+│   └── eval.py                   # evaluate an existing results dir
 │
 ├── src/
-│   ├── approaches/               # pluggable UML-pruning strategies
-│   │   ├── base.py               # ApproachRunner protocol + ApproachInputs/Result
-│   │   ├── __init__.py           # registry of approaches
-│   │   ├── rag_classes_filter/   # #1 — wraps the legacy 2-stage pipeline
-│   │   ├── anchor_neighbors/     # #2 — anchor + neighbors + prune
-│   │   ├── agentic_chunks/       # #3 — chunked agentic selection
-│   │   └── human_like_agent/     # #4 — anchors + centrality expansion
+│   ├── core/                     # shared primitives
+│   │   ├── io.py                 # load/save diagrams + JSON helpers
+│   │   ├── config.py             # YAML loader (with ${ENV_VAR} expansion)
+│   │   ├── logger.py
+│   │   ├── tokens.py             # token-count helper
+│   │   └── types.py              # ApproachInputs / ApproachResult / ApproachRunner
 │   │
-│   ├── pipeline/                 # legacy 2-stage pipeline (used by approach #1)
-│   │   ├── pipeline.py           # run_pipeline(query, diagram, client, cfg)
-│   │   ├── stage1_coarse.py      # LLM Stage 1: package-level coarse filter
-│   │   ├── stage2_midlevel.py    # LLM Stage 2: per-class REQUIRED/USEFUL classifier
-│   │   └── autosplit.py          # generic recursive batch-splitter for LLM calls
+│   ├── llm/
+│   │   ├── client.py             # OpenAI-compatible async client
+│   │   ├── parser.py             # tolerant JSON parser
+│   │   ├── budget.py             # TokenBudget
+│   │   └── prompt_loader.py      # load_prompt(path), render_prompt(path, **vars)
 │   │
-│   ├── llm/                      # OpenAI-compatible client, prompts, parser, budget
-│   ├── preprocessing/            # package grouping, batching, subgraph compressor
-│   ├── embeddings/               # local embedding retriever
+│   ├── rag/                      # local embedding retrieval
 │   │   ├── encoder.py            # LocalEncoder (sentence-transformers wrapper)
-│   │   ├── node_to_text.py       # GRAPH-AWARE text serialization of a node
+│   │   ├── node_to_text.py       # graph-aware text serialization of a node
 │   │   ├── cache.py              # on-disk index format + validity checks
 │   │   └── retriever.py          # top-K cosine-similarity retrieval
 │   │
-│   ├── evaluation/
-│   │   ├── annotations.py        # loads the consolidated dataset (data/dataset.csv)
+│   ├── eval/
+│   │   ├── annotations.py        # loads the consolidated dataset
 │   │   ├── metrics.py            # precision / recall_required / recall_useful / f1
-│   │   └── evaluator.py          # evaluates a results dir against the dataset
+│   │   └── evaluator.py          # evaluate a results dir against the dataset
 │   │
-│   └── utils/                    # config, io, logger, token counter
-│
-├── scripts/
-│   ├── build_dataset.py          # raw annotations -> consolidated dataset (votes, repo lookup)
-│   ├── normalize_diagrams.py     # uml_with_methods/ -> data/diagrams_normalized/
-│   ├── build_index.py            # build embedding indices for normalized diagrams
-│   ├── benchmark.py              # GENERIC: run any approach on the dataset, evaluate
-│   ├── evaluate.py               # evaluate an arbitrary results-dir vs the dataset
-│   ├── eval_retriever.py         # evaluate embedding retrieval in isolation
-│   ├── retrieve.py               # query an existing embedding index (debug)
-│   ├── batch_process.py          # legacy CLI: run the 2-stage pipeline (= approach #1)
-│   ├── run_pipeline.py           # legacy CLI: prune ONE diagram with ONE query
-│   │
-│   └── approaches/               # per-approach run scripts + READMEs
-│       ├── rag_classes_filter/   # README + run.py (delegates to benchmark.py)
-│       ├── anchor_neighbors/     # README + run.py (stub)
-│       ├── agentic_chunks/       # README + run.py (stub)
-│       └── human_like_agent/     # README + run.py (stub)
+│   └── approaches/
+│       ├── __init__.py           # registry of approaches
+│       ├── _common/              # cross-approach helpers
+│       │   ├── compressor.py     # filter_subgraph + class representation builders
+│       │   ├── package_grouper.py
+│       │   └── batching.py
+│       │
+│       ├── rag_classes_filter/   # #1 — implemented
+│       │   ├── runner.py         # ApproachRunner adapter
+│       │   ├── pipeline.py       # run_pipeline(query, diagram, client, cfg)
+│       │   ├── stage1.py
+│       │   ├── stage2.py
+│       │   ├── autosplit.py
+│       │   ├── prompts/          # owned by THIS approach
+│       │   └── README.md
+│       │
+│       ├── anchor_neighbors/     # #2 — implemented
+│       │   ├── runner.py
+│       │   ├── prompts/
+│       │   │   ├── select_{system,user}.txt
+│       │   │   └── prune_{system,user}.txt
+│       │   └── README.md
+│       │
+│       ├── agentic_chunks/       # #3 — stub
+│       └── human_like_agent/     # #4 — stub
 │
 ├── tests/
-│   ├── unit/                     # tests for autosplit, budget, compressor, metrics
+│   ├── unit/                     # autosplit, budget, compressor, metrics
 │   └── integration/              # mocked end-to-end pipeline test
-│
-├── data/
-│   ├── dataset.csv               # consolidated dataset (built by build_dataset.py)
-│   ├── diagrams_normalized/      # cleaned diagrams (built by normalize_diagrams.py)
-│   ├── embeddings/               # cached embedding indices, keyed by diagram stem
-│   └── results/                  # per-approach result JSONs + eval reports
 │
 └── logs/                         # log files (configurable in config.yaml)
 ```
+
+### Two flat layers, not three
+
+We deliberately **don't** split between `scripts/` and `src/<feature>/cli/`.
+The convention is:
+
+- `scripts/*.py` are thin entry points: argparse + glue.
+- `src/<package>/` holds the actual logic and exports importable functions.
+
+Approaches are fully self-contained: a single `src/approaches/<name>/`
+folder holds the runner, the prompts, and the README. To understand or
+modify an approach you only need to read that one folder.
 
 ## Configuration (`configs/config.yaml`)
 
@@ -190,21 +205,23 @@ Key sections:
   temperature, retries, and **context budget** (`context_window`,
   `output_reserve`, `safety_margin`). The client is OpenAI-API compatible
   (works with OpenAI, OpenRouter, Together, Ollama/LM Studio, etc).
-- `pipeline.stage1` — batch size, parallelism, relevance levels.
-- `pipeline.stage2` — batch size, parallelism, output categories,
-  `max_output_classes`.
-- `pipeline.max_split_depth` — autosplit recursion cap (shared by both stages).
-- `embeddings` — opt-in semantic retrieval as a Stage 1 replacement: model,
-  device (`auto|cuda|mps|cpu`), `top_k`, cache dir, text-build limits.
-- `evaluation.metrics` — which metrics the evaluator computes.
-- `paths` — diagrams dir, annotations file, results dir, logs dir, prompts dir.
+- `pipeline.stage1` / `pipeline.stage2` — knobs for approach #1
+  (batch size, parallelism, output categories).
+- `pipeline.max_split_depth` — autosplit recursion cap.
+- `embeddings` — RAG model, device, `top_k`, cache dir, text-build limits.
+- `approaches.<name>` — per-approach knobs (e.g.
+  `approaches.anchor_neighbors.n_candidates`). Absent sections fall back to
+  hard-coded defaults inside each runner.
+- `evaluation.metrics` — which metrics the evaluator reports.
+- `paths` — locations of source diagrams, normalized diagrams, dataset CSV,
+  results dir, logs dir.
 
 ## CLI usage
 
 ### One-time data preparation
 
 ```bash
-# 1. Build the consolidated dataset (votes per node, repo lookup, etc.).
+# 1. Build the consolidated dataset (votes per node, repo lookup).
 #    Default output: data/dataset.csv
 python scripts/build_dataset.py
 
@@ -212,8 +229,7 @@ python scripts/build_dataset.py
 #    uml_with_methods/  ->  data/diagrams_normalized/
 python scripts/normalize_diagrams.py
 
-# 3. Build embedding indices (optional, only if you'll use approach #1
-#    with the embedding retriever, or #2 / #4 once implemented).
+# 3. Build embedding indices (needed for any approach using RAG).
 pip install -r requirements-embeddings.txt
 python scripts/build_index.py --all
 ```
@@ -222,78 +238,86 @@ python scripts/build_index.py --all
 
 ```bash
 # List all registered approaches
-python scripts/benchmark.py --list
+python scripts/run.py --list
 
-# Run baseline on the whole dataset
-python scripts/benchmark.py --approach rag_classes_filter
-
-# Or use the per-approach wrapper (same effect; lives next to its README)
-python scripts/approaches/rag_classes_filter/run.py
+# Run on the whole dataset, then evaluate
+python scripts/run.py --approach rag_classes_filter
+python scripts/run.py --approach anchor_neighbors
 
 # Restrict to one repo / one sample / a few samples
-python scripts/benchmark.py --approach rag_classes_filter --repo apache/hadoop
-python scripts/benchmark.py --approach rag_classes_filter --sample-id <id>
-python scripts/benchmark.py --approach rag_classes_filter --limit 5
+python scripts/run.py --approach anchor_neighbors --repo apache/hadoop
+python scripts/run.py --approach anchor_neighbors --sample-id <id>
+python scripts/run.py --approach anchor_neighbors --limit 5
+
+# Skip the evaluation step
+python scripts/run.py --approach anchor_neighbors --no-eval
 ```
 
 Outputs land under `data/results/<approach>/`:
 - `<sample_id>.json` — pruned subgraph per sample (`{nodes, edges, metadata}`).
-- `evaluation_report.json` — aggregate metrics, written automatically unless
-  `--no-eval` is passed.
+- `evaluation_report.json` — aggregate metrics (auto-written unless `--no-eval`).
 - `errors.json` — per-sample failures (missing diagram, runner error, etc.).
 
 ### Evaluate an existing result dir
 
 ```bash
-python scripts/evaluate.py \
+python scripts/eval.py \
   --dataset data/dataset.csv \
-  --results-dir data/results/rag_classes_filter \
-  --output      data/results/rag_classes_filter/evaluation_report.json
+  --results-dir data/results/anchor_neighbors \
+  --output      data/results/anchor_neighbors/evaluation_report.json
 ```
 
-### Legacy single-diagram CLI
+### Test the RAG retriever in isolation
 
 ```bash
-python scripts/run_pipeline.py \
-  --query "Show classes responsible for X" \
-  --diagram data/diagrams_normalized/disruptor.json \
-  --output  data/results/disruptor_X.json
+# Run a single query against a built index
+python scripts/retrieve.py \
+  --diagram uml_with_methods/ghidra.json \
+  --query "Show classes responsible for defining external locations" \
+  --top-k 50 \
+  --output data/results/ghidra_retrieved.json
+
+# Sweep top-K and report recall_required / recall_useful on the dataset
+python scripts/eval_retriever.py --top-k 100 300 500
+python scripts/eval_retriever.py --repo NationalSecurityAgency/ghidra --show-misses
 ```
 
 ## Evaluation methodology
 
-`annotations.csv` is the raw multi-annotator file. The benchmarks evaluate
-against the **consolidated dataset** built from it by
-`scripts/build_dataset.py`:
+`annotations.csv` is the raw multi-annotator file. Benchmarks evaluate
+against the **consolidated dataset** built by `scripts/build_dataset.py`:
 
 - One row per `(sample_id, central_node, query)`.
-- `entity_annotations`: voted map `node_id → "required" | "useful"` (the
-  build script applies a strict-majority vote per node, with a
-  `required > useful > irrelevant` priority for ties; `irrelevant` is dropped
-  from the final map).
+- `entity_annotations`: voted map `node_id → "required" | "useful"` (strict
+  majority vote per node, with a `required > useful > irrelevant` priority
+  for ties; `irrelevant` is dropped from the final map).
 - `repo` is resolved by searching for `central_node` inside each diagram's
   JSON (no prefix tables).
 - Only `Finalized` annotations are used; samples with fewer than two
   annotators are dropped by default (`--keep-single` to override).
 
-`src/evaluation/metrics.py` computes precision, `recall_required`,
+`src/eval/metrics.py` computes precision, `recall_required`,
 `recall_useful`, overall recall, and F1, comparing the approach's
 `required_node_ids ∪ useful_node_ids` against the dataset.
 
+### Ground-truth isolation
+
+`ApproachInputs` deliberately omits `central_node` and the per-sample
+annotations. Approaches see ONLY the user query and the full normalized
+diagram — same information as in production. `sample_id` and `repo` are
+passed in for output filenames and on-disk index lookup, and runners must
+not derive any decision from them.
+
 ## Notes for future agents
 
-- The example `uml.json` at the repo root is a tiny Observer-pattern diagram,
-  illustrating the expected JSON shape; real diagrams live in
-  `uml_with_methods/` (and the cleaned form in `data/diagrams_normalized/`)
-  and can have thousands of nodes.
 - All data preparation is centralized in `scripts/build_dataset.py` and
   `scripts/normalize_diagrams.py`. Other scripts treat their outputs as
   immutable.
 - Approaches are pluggable: implement `src/approaches/<name>/runner.py`,
-  register it in `src/approaches/__init__.py::REGISTRY`, drop a README +
-  `run.py` into `scripts/approaches/<name>/`, and you can benchmark it via
-  `scripts/benchmark.py --approach <name>`.
-- The pipeline is async (`asyncio`); LLM calls are parallelized per stage
-  with `max_parallel_requests`.
-- All LLM responses are constrained to JSON; `src/llm/parser.py` is tolerant
-  of stray prose / fences from less obedient models.
+  register it in `src/approaches/__init__.py::REGISTRY`, drop prompts into
+  `src/approaches/<name>/prompts/`, and you can benchmark it via
+  `scripts/run.py --approach <name>`.
+- All LLM calls are async; per-stage parallelism is controlled by
+  `max_parallel_requests` in the YAML.
+- LLM responses are constrained to JSON; `src/llm/parser.py` is tolerant of
+  stray prose / fences from less obedient models.

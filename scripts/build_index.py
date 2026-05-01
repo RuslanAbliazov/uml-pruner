@@ -40,17 +40,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.embeddings.cache import (
+from src.rag.cache import (
     compute_diagram_hash,
     is_valid,
     load_cache,
     save_cache,
 )
-from src.embeddings.encoder import EncoderConfig, LocalEncoder
-from src.embeddings.node_to_text import nodes_to_texts
-from src.utils.config import load_config
-from src.utils.io import load_diagram
-from src.utils.logger import setup_logger
+from src.rag.encoder import EncoderConfig, LocalEncoder
+from src.rag.node_to_text import nodes_to_texts
+from src.core.config import load_config
+from src.core.io import load_diagram
+from src.core.logger import setup_logger
 
 
 def parse_args() -> argparse.Namespace:

@@ -1,7 +1,7 @@
 """Pluggable UML-pruning approaches.
 
 Every approach implements the :class:`ApproachRunner` protocol defined in
-:mod:`src.approaches.base`. New approaches register themselves in the
+:mod:`src.core.types`. New approaches register themselves in the
 :data:`REGISTRY` dictionary so that they can be selected by name from the
 benchmark / CLI scripts.
 
@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from src.approaches.base import ApproachInputs, ApproachResult, ApproachRunner
+from src.core.types import ApproachInputs, ApproachResult, ApproachRunner
 
 # Lazy registry: name -> factory(cfg) -> ApproachRunner.
 # Factories are imported lazily so that an approach with optional dependencies

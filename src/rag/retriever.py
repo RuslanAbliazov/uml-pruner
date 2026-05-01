@@ -13,9 +13,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from src.embeddings.cache import EmbeddingCacheEntry
-from src.embeddings.encoder import LocalEncoder
-from src.utils.logger import get_logger
+from src.rag.cache import EmbeddingCacheEntry
+from src.rag.encoder import LocalEncoder
+from src.core.logger import get_logger
 
 logger = get_logger(__name__)
 

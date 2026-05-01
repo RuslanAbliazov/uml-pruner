@@ -45,17 +45,17 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.embeddings.cache import compute_diagram_hash, is_valid, load_cache
-from src.embeddings.encoder import EncoderConfig, LocalEncoder
-from src.embeddings.retriever import retrieve_top_k
-from src.evaluation.annotations import (
+from src.rag.cache import compute_diagram_hash, is_valid, load_cache
+from src.rag.encoder import EncoderConfig, LocalEncoder
+from src.rag.retriever import retrieve_top_k
+from src.eval.annotations import (
     AnnotationSample,
     diagram_filename_for_repo,
     load_dataset,
 )
-from src.utils.config import load_config
-from src.utils.io import load_diagram, save_json
-from src.utils.logger import setup_logger
+from src.core.config import load_config
+from src.core.io import load_diagram, save_json
+from src.core.logger import setup_logger
 
 logger = setup_logger()
 
@@ -402,7 +402,7 @@ def main() -> None:
     diagrams_dir = Path(
         args.diagrams_dir
         or (cfg.paths.get("diagrams_dir") if hasattr(cfg, "paths") else None)
-        or "full_diagrams_fixed_generic"
+        or "uml_with_methods"
     )
 
     default_top_k = (emb_raw.get("top_k") if emb_raw else None) or 300

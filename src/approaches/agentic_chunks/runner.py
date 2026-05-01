@@ -30,7 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from src.approaches.base import ApproachInputs, ApproachResult
+from src.core.types import ApproachInputs, ApproachResult
 
 NAME = "agentic_chunks"
 

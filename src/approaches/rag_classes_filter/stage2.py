@@ -11,23 +11,46 @@ Uses the autosplit driver to recursively split oversized batches.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from src.llm.budget import TokenBudget
 from src.llm.client import LLMClient
 from src.llm.parser import parse_json_response
-from src.llm.prompts import build_stage2_user_prompt, stage2_system_prompt
-from src.pipeline.autosplit import (
+from src.llm.prompt_loader import load_prompt, render_prompt
+from src.approaches.rag_classes_filter.autosplit import (
     AutoSplitStats,
     MaxSplitDepthExceeded,
     process_with_autosplit,
 )
-from src.preprocessing.batching import make_batches
-from src.preprocessing.compressor import build_class_representation, build_edge_index
-from src.utils.logger import get_logger
+from src.approaches._common.batching import make_batches
+from src.approaches._common.compressor import build_class_representation, build_edge_index
+from src.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+def _stage2_system_prompt() -> str:
+    return load_prompt(_PROMPTS_DIR / "stage2_system.txt")
+
+
+def _build_stage2_user_prompt(
+    query: str,
+    classes: list[dict[str, Any]],
+    batch_idx: int,
+    total_batches: int,
+) -> str:
+    return render_prompt(
+        _PROMPTS_DIR / "stage2_user.txt",
+        query=query,
+        batch_idx=batch_idx,
+        total_batches=total_batches,
+        classes_json=json.dumps(classes, ensure_ascii=False),
+    )
 
 
 @dataclass
@@ -136,8 +159,8 @@ async def run_stage2(
 
     def build_prompt(items: list[dict[str, Any]]) -> tuple[str, str]:
         return (
-            stage2_system_prompt(),
-            build_stage2_user_prompt(query, items, 1, 1),
+            _stage2_system_prompt(),
+            _build_stage2_user_prompt(query, items, 1, 1),
         )
 
     async def handle_oversized_rep(rep: dict[str, Any]) -> Stage2Result:

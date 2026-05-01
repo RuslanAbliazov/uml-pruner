@@ -54,7 +54,7 @@ Usage
 -----
     python scripts/build_dataset.py \
         --annotations annotations.csv \
-        --diagrams-dir full_diagrams_fixed_generic \
+        --diagrams-dir uml_with_methods \
         --output data/dataset.csv
 
     # Exclude annotators and keep single-annotator samples:
@@ -409,8 +409,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--diagrams-dir",
-        default="full_diagrams_fixed_generic",
-        help="Directory with project diagram JSONs (default: full_diagrams_fixed_generic).",
+        default="uml_with_methods",
+        help="Directory with project diagram JSONs (default: uml_with_methods).",
     )
     p.add_argument(
         "--output",

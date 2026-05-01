@@ -9,7 +9,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.preprocessing.compressor import build_class_representation
+from src.approaches._common.compressor import build_class_representation
 
 
 def _node_with_many_methods(n: int) -> dict:

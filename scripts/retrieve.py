@@ -10,7 +10,7 @@ Prerequisites:
 
 Usage:
     python scripts/retrieve.py \\
-        --diagram full_diagrams_fixed_generic/ghidra.json \\
+        --diagram uml_with_methods/ghidra.json \\
         --query "Show classes responsible for defining external locations" \\
         --output data/results/ghidra_retrieved.json
 
@@ -42,12 +42,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.embeddings.cache import compute_diagram_hash, is_valid, load_cache
-from src.embeddings.encoder import EncoderConfig, LocalEncoder
-from src.embeddings.retriever import retrieve_top_k
-from src.utils.config import load_config
-from src.utils.io import load_diagram, save_json
-from src.utils.logger import setup_logger
+from src.rag.cache import compute_diagram_hash, is_valid, load_cache
+from src.rag.encoder import EncoderConfig, LocalEncoder
+from src.rag.retriever import retrieve_top_k
+from src.core.config import load_config
+from src.core.io import load_diagram, save_json
+from src.core.logger import setup_logger
 
 
 def parse_args() -> argparse.Namespace:

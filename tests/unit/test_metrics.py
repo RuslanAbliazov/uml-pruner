@@ -8,7 +8,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.evaluation.metrics import aggregate_metrics, evaluate_sample
+from src.eval.metrics import aggregate_metrics, evaluate_sample
 
 
 def approx(a: float, b: float, tol: float = 1e-6) -> bool:

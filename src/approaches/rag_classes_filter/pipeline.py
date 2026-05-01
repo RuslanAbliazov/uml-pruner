@@ -20,10 +20,10 @@ from typing import Any
 
 from src.llm.budget import TokenBudget
 from src.llm.client import LLMClient
-from src.pipeline.stage1_coarse import run_stage1
-from src.pipeline.stage2_midlevel import run_stage2
-from src.preprocessing.compressor import filter_subgraph
-from src.utils.logger import get_logger
+from src.approaches.rag_classes_filter.stage1 import run_stage1
+from src.approaches.rag_classes_filter.stage2 import run_stage2
+from src.approaches._common.compressor import filter_subgraph
+from src.core.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -97,13 +97,13 @@ async def _stage1_via_embeddings(
         return set(), "embeddings_no_diagram_name"
 
     try:
-        from src.embeddings.cache import (
+        from src.rag.cache import (
             compute_diagram_hash,
             is_valid,
             load_cache,
         )
-        from src.embeddings.encoder import EncoderConfig, LocalEncoder
-        from src.embeddings.retriever import retrieve_top_k_ids
+        from src.rag.encoder import EncoderConfig, LocalEncoder
+        from src.rag.retriever import retrieve_top_k_ids
     except ImportError as e:
         logger.warning(
             "Embedding deps not installed (%s); falling back to LLM Stage 1."

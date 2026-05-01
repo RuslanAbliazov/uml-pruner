@@ -24,34 +24,62 @@ itself never touches the filesystem.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from src.approaches.base import ApproachInputs, ApproachResult
-from src.embeddings.cache import (
+from src.core.types import ApproachInputs, ApproachResult
+from src.rag.cache import (
     EmbeddingCacheEntry,
     compute_diagram_hash,
     is_valid,
     load_cache,
 )
-from src.embeddings.encoder import EncoderConfig, LocalEncoder
-from src.embeddings.retriever import retrieve_top_k
+from src.rag.encoder import EncoderConfig, LocalEncoder
+from src.rag.retriever import retrieve_top_k
 from src.llm.client import LLMClient
 from src.llm.parser import parse_json_response
-from src.llm.prompts import (
-    anchor_prune_system_prompt,
-    anchor_select_system_prompt,
-    build_anchor_prune_user_prompt,
-    build_anchor_select_user_prompt,
-)
-from src.preprocessing.compressor import filter_subgraph
-from src.utils.logger import get_logger
+from src.llm.prompt_loader import load_prompt, render_prompt
+from src.approaches._common.compressor import filter_subgraph
+from src.core.logger import get_logger
 
 NAME = "anchor_neighbors"
 
 logger = get_logger(__name__)
+
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+def _select_system_prompt() -> str:
+    return load_prompt(_PROMPTS_DIR / "select_system.txt")
+
+
+def _build_select_user_prompt(query: str, candidates: list[dict[str, Any]]) -> str:
+    return render_prompt(
+        _PROMPTS_DIR / "select_user.txt",
+        query=query,
+        candidates_json=json.dumps(candidates, ensure_ascii=False, indent=2),
+    )
+
+
+def _prune_system_prompt() -> str:
+    return load_prompt(_PROMPTS_DIR / "prune_system.txt")
+
+
+def _build_prune_user_prompt(
+    query: str,
+    anchor: str,
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> str:
+    return render_prompt(
+        _PROMPTS_DIR / "prune_user.txt",
+        query=query,
+        anchor=anchor,
+        subgraph_json=json.dumps({"nodes": nodes, "edges": edges}, ensure_ascii=False),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -269,11 +297,11 @@ class AnchorNeighborsRunner:
                 }
             )
 
-        user_prompt = build_anchor_select_user_prompt(query=query, candidates=enriched)
+        user_prompt = _build_select_user_prompt(query=query, candidates=enriched)
         t0 = time.time()
         try:
             resp = await self._llm.call(
-                anchor_select_system_prompt(),
+                _select_system_prompt(),
                 user_prompt,
                 json_mode=True,
             )
@@ -356,7 +384,7 @@ class AnchorNeighborsRunner:
         # Trim the node payload to the LLM-friendly subset (no description leak).
         trimmed_nodes = [_node_for_llm(n) for n in nodes]
         trimmed_edges = [_edge_for_llm(e) for e in edges]
-        user_prompt = build_anchor_prune_user_prompt(
+        user_prompt = _build_prune_user_prompt(
             query=query,
             anchor=anchor,
             nodes=trimmed_nodes,
@@ -365,7 +393,7 @@ class AnchorNeighborsRunner:
         t0 = time.time()
         try:
             resp = await self._llm.call(
-                anchor_prune_system_prompt(),
+                _prune_system_prompt(),
                 user_prompt,
                 json_mode=True,
             )
@@ -524,7 +552,7 @@ def build_runner(cfg: Any | None = None) -> AnchorNeighborsRunner:
         - ``embeddings`` for shared retrieval defaults (model, device, etc.).
         - ``llm`` for the LLM connection.
     """
-    from src.utils.config import load_config  # avoid import cycles at module load
+    from src.core.config import load_config  # avoid import cycles at module load
 
     if cfg is None:
         cfg = load_config("configs/config.yaml")
