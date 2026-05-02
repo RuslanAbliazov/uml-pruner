@@ -1,199 +1,311 @@
 #!/usr/bin/env python3
-"""CLI for running the ``anchor_neighbors`` approach over the dataset.
+"""CLI для подхода ``anchor_neighbors``.
 
-This is a self-contained entry point for approach #2 — invoke it directly
-from this folder instead of going through ``scripts/run.py``.
+Дизайн:
 
-Usage
------
+* На вход — slim-CSV `(repo, query)` (по умолчанию `data/dataset_queries.csv`).
+  Pipeline видит ТОЛЬКО эти два поля.
+* Эталон (required/useful) грузится отдельно (по умолчанию `data/dataset.csv`)
+  и используется ИСКЛЮЧИТЕЛЬНО внутри `metrics.py` после выполнения этапа.
+  Это структурно исключает утечку ground-truth в pipeline.
+* Глубина прогона задаётся `--until {rag,anchor,neighbors,prune}`. Метрики
+  считаются только для тех этапов, которые реально выполнились.
+* Все параметры модели/ретривера/LLM — из `configs/config.yaml`. В этом
+  скрипте никаких дефолтов нет.
 
-    # Whole dataset, then evaluate
-    python src/approaches/anchor_neighbors/run.py
+Пример:
 
-    # A handful of samples, no eval
-    python src/approaches/anchor_neighbors/run.py --limit 5 --no-eval
+    # Только RAG, чтобы понять качество top-K кандидатов на всём датасете
+    python src/approaches/anchor_neighbors/run.py --until rag
 
-    # One repo / one sample
-    python src/approaches/anchor_neighbors/run.py --repo apache/hadoop
-    python src/approaches/anchor_neighbors/run.py --sample-id <id>
+    # Полный прогон с ограничением на 5 запросов и без матчинга по эталону
+    python src/approaches/anchor_neighbors/run.py --until prune --limit 5 --no-eval
 
-Outputs go to ``data/results/anchor_neighbors/`` by default.
+    # Один конкретный (repo, query) для дебага одной строки
+    python src/approaches/anchor_neighbors/run.py --until prune \\
+        --repo apache/hadoop --query "..." 
+
+Выходы (в `outputs_dir` из конфига, по умолчанию
+`data/results/anchor_neighbors/`):
+    report.jsonl              — поэтапные метрики и payload каждого этапа.
+    aggregate.json            — усреднённые метрики по всем сэмплам.
+    samples/<idx>.json        — финальный подграф для каждого сэмпла.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
+import json
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-# Make the repo root importable when this file is run as a script.
+# Сделать корень проекта импортируемым, когда этот скрипт запускают как файл.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dotenv import load_dotenv
-from tqdm import tqdm
+from src.approaches.anchor_neighbors.debug_report import (  # noqa: E402
+    JsonlReportWriter,
+    aggregate,
+)
+from src.approaches.anchor_neighbors.ground_truth import (  # noqa: E402
+    GoldTruthIndex,
+)
+from src.approaches.anchor_neighbors.metrics import (  # noqa: E402
+    SampleReport,
+    build_sample_report,
+)
+from src.approaches.anchor_neighbors.pipeline import (  # noqa: E402
+    AnchorNeighborsPipeline,
+    PipelineOutcome,
+)
+from src.approaches.anchor_neighbors.settings import (  # noqa: E402
+    build_runner,
+    load_settings,
+)
+from src.approaches.anchor_neighbors.stage_outputs import StageName  # noqa: E402
+from src.core.config import load_config  # noqa: E402
+from src.core.io import load_diagram, save_json  # noqa: E402
+from src.core.types import ApproachInputs  # noqa: E402
+from src.eval.annotations import diagram_filename_for_repo  # noqa: E402
 
-from src.approaches.anchor_neighbors import build_runner
-from src.core.config import load_config
-from src.core.io import load_diagram, save_diagram, save_json
-from src.core.logger import setup_logger
-from src.core.types import ApproachInputs
-from src.eval.annotations import diagram_filename_for_repo, load_dataset
-from src.eval.evaluator import evaluate_test_set, format_summary_report
 
-APPROACH_NAME = "anchor_neighbors"
+# ---- модель сэмпла на входе ----------------------------------------------
 
+@dataclass(frozen=True)
+class SlimSample:
+    """Только то, что pipeline разрешено видеть."""
+    repo: str
+    query: str
+
+
+def load_slim_csv(path: Path) -> list[SlimSample]:
+    """Прочитать CSV из `scripts/anonymize_dataset.py`. Колонки: repo,query."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"slim-датасет не найден: {path}. "
+            f"Сгенерируй его: `python scripts/anonymize_dataset.py`"
+        )
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None or set(reader.fieldnames) < {"repo", "query"}:
+            raise ValueError(
+                f"{path}: ожидаются колонки 'repo' и 'query', "
+                f"нашёл: {reader.fieldnames}"
+            )
+        return [SlimSample(repo=r["repo"], query=r["query"]) for r in reader]
+
+
+# ---- разбор флагов -------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=f"Run the '{APPROACH_NAME}' approach.")
-    p.add_argument("--dataset", default="data/dataset.csv",
-                   help="Consolidated dataset CSV (default: data/dataset.csv).")
-    p.add_argument("--diagrams-dir", default="data/diagrams_normalized",
-                   help="Where normalized diagrams live "
-                        "(default: data/diagrams_normalized).")
-    p.add_argument("--output-dir", default=None,
-                   help=f"Where to write per-sample results. "
-                        f"Default: data/results/{APPROACH_NAME}/.")
-    p.add_argument("--config", default="configs/config.yaml",
-                   help="Project YAML config.")
-    p.add_argument("--repo", default="",
-                   help="Restrict to samples from this repo slug "
-                        "(e.g. 'apache/hadoop').")
-    p.add_argument("--sample-id", default="",
-                   help="Run only the sample with this id (debugging).")
-    p.add_argument("--limit", type=int, default=0,
-                   help="Process at most N samples (0 = all).")
-    p.add_argument("--overwrite", action="store_true",
-                   help="Re-run even if a result file already exists.")
-    p.add_argument("--no-eval", action="store_true",
-                   help="Skip the evaluation step after generation.")
-    p.add_argument("--verbose", action="store_true")
+    p = argparse.ArgumentParser(
+        description="Запуск подхода 'anchor_neighbors' по slim-датасету.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument(
+        "--until",
+        choices=[s.value for s in StageName],
+        default=StageName.PRUNE.value,
+        help="До какого этапа прогонять: rag/anchor/neighbors/prune.",
+    )
+    p.add_argument(
+        "--queries",
+        type=Path,
+        default=Path("data/dataset_queries.csv"),
+        help="CSV (repo,query) — ровно то, что подаётся в pipeline.",
+    )
+    p.add_argument(
+        "--gold",
+        type=Path,
+        default=Path("data/dataset.csv"),
+        help="Полный датасет с аннотациями — нужен ТОЛЬКО для метрик.",
+    )
+    p.add_argument(
+        "--diagrams-dir",
+        type=Path,
+        default=Path("data/diagrams_normalized"),
+        help="Папка с нормализованными диаграммами.",
+    )
+    p.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/config.yaml"),
+        help="YAML-конфиг проекта.",
+    )
+    p.add_argument(
+        "--repo",
+        default="",
+        help="Оставить только сэмплы этого repo (например, apache/hadoop).",
+    )
+    p.add_argument(
+        "--query",
+        default="",
+        help="Оставить только сэмпл с точно таким текстом запроса.",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Сколько сэмплов обработать (0 = все).",
+    )
+    p.add_argument(
+        "--no-eval",
+        action="store_true",
+        help="Не считать метрики (нужно только для прогона без эталона).",
+    )
     return p.parse_args()
 
 
-async def _process_sample(
-    runner,
-    sample,
-    diagrams_dir: Path,
-    diagram_cache: dict,
-    output_dir: Path,
-    overwrite: bool,
-    errors: list[dict],
-) -> bool:
-    """Run the runner on a single sample. Returns True iff we wrote a file."""
-    out_file = output_dir / f"{sample.sample_id}.json"
-    if out_file.exists() and not overwrite:
-        return False
+# ---- основная логика -----------------------------------------------------
 
+async def _process_one(
+    pipeline: AnchorNeighborsPipeline,
+    sample: SlimSample,
+    diagrams_dir: Path,
+    diagram_cache: dict[str, dict],
+    until: StageName,
+    sample_idx: int,
+) -> PipelineOutcome:
+    """Прогнать pipeline по одному сэмплу."""
     fname = diagram_filename_for_repo(sample.repo)
-    if not fname:
-        errors.append({"sample_id": sample.sample_id, "reason": "unknown_repo",
-                       "repo": sample.repo})
-        return False
-    path = diagrams_dir / fname
-    if not path.exists():
-        errors.append({"sample_id": sample.sample_id, "reason": "diagram_missing",
-                       "path": str(path)})
-        return False
     if fname not in diagram_cache:
-        diagram_cache[fname] = load_diagram(path)
+        diagram_cache[fname] = load_diagram(diagrams_dir / fname)
     diagram = diagram_cache[fname]
 
-    # NOTE: ground-truth (central_node) is intentionally NOT passed in.
-    # The approach sees only the user query + the full diagram.
     inputs = ApproachInputs(
         query=sample.query,
         diagram=diagram,
-        sample_id=sample.sample_id,
+        # sample_id используется ТОЛЬКО для имён файлов, pipeline на нём
+        # не строит решений — это закреплено в комментариях ApproachInputs.
+        sample_id=f"sample_{sample_idx:04d}",
         repo=sample.repo,
     )
-
-    try:
-        result = await runner.run(inputs)
-    except Exception as e:  # noqa: BLE001 — surface failures as errors
-        errors.append({"sample_id": sample.sample_id,
-                       "reason": "runner_error", "detail": repr(e)})
-        return False
-
-    diagram_out = result.to_diagram()
-    meta = diagram_out.setdefault("metadata", {})
-    meta["sample_id"] = sample.sample_id
-    meta["repo"] = sample.repo
-    meta["query"] = sample.query
-    meta["approach"] = APPROACH_NAME
-    save_diagram(diagram_out, out_file)
-    return True
+    return await pipeline.run_with_stages(inputs, until=until)
 
 
-async def _run(args: argparse.Namespace) -> None:
-    load_dotenv()
-    cfg = load_config(args.config)
-    setup_logger(
-        level="DEBUG" if args.verbose else cfg.logging.get("level", "INFO"),
-        log_file=cfg.logging.get("file", None),
+def _filter_samples(
+    samples: list[SlimSample], repo: str, query: str, limit: int
+) -> list[SlimSample]:
+    """Применить фильтры командной строки к slim-датасету."""
+    out = samples
+    if repo:
+        out = [s for s in out if s.repo == repo]
+    if query:
+        out = [s for s in out if s.query == query]
+    if limit:
+        out = out[:limit]
+    return out
+
+
+async def _run_async(args: argparse.Namespace) -> int:
+    cfg = load_config(str(args.config))
+    settings = load_settings(cfg)
+    pipeline = build_runner(cfg)
+
+    # 1. Что подаём в пайплайн.
+    samples = _filter_samples(
+        load_slim_csv(args.queries),
+        repo=args.repo,
+        query=args.query,
+        limit=args.limit,
     )
-
-    samples = load_dataset(args.dataset)
-    if args.repo:
-        samples = [s for s in samples if s.repo == args.repo]
-    if args.sample_id:
-        samples = [s for s in samples if s.sample_id == args.sample_id]
-    if args.limit:
-        samples = samples[: args.limit]
-
     if not samples:
-        print("[error] no samples to run after filtering.", file=sys.stderr)
-        sys.exit(2)
+        print("[error] под фильтры не попало ни одного сэмпла.", file=sys.stderr)
+        return 2
 
-    diagrams_dir = Path(args.diagrams_dir)
-    output_dir = Path(args.output_dir or f"data/results/{APPROACH_NAME}")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # 2. Эталон загружается отдельно. Pipeline его не видит.
+    gold_index = None
+    missing_gold: list[tuple[str, str]] = []
+    if not args.no_eval:
+        gold_index = GoldTruthIndex.from_csv(args.gold)
+        if gold_index.duplicates:
+            print(
+                f"[warn] эталон содержит {len(gold_index.duplicates)} "
+                f"дублирующих ключей (repo, query); берём первый.",
+                file=sys.stderr,
+            )
 
-    runner = build_runner(cfg)
+    # 3. Подготовка путей вывода.
+    out_dir: Path = settings.pipeline.outputs_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    samples_dir = out_dir / "samples"
+    samples_dir.mkdir(exist_ok=True)
+    report_path = out_dir / "report.jsonl"
+    aggregate_path = out_dir / "aggregate.json"
 
+    until = StageName(args.until)
     diagram_cache: dict[str, dict] = {}
-    errors: list[dict] = []
-    finished = 0
+    sample_reports: list[SampleReport] = []
+    runtime_errors: list[dict] = []
 
-    t0 = time.time()
-    for sample in tqdm(samples, desc=APPROACH_NAME):
-        if await _process_sample(
-            runner, sample, diagrams_dir, diagram_cache,
-            output_dir, args.overwrite, errors,
-        ):
-            finished += 1
-    await runner.aclose()
+    started = time.time()
+    with JsonlReportWriter(report_path) as report:
+        for idx, sample in enumerate(samples):
+            try:
+                outcome = await _process_one(
+                    pipeline, sample, args.diagrams_dir,
+                    diagram_cache, until, idx,
+                )
+            except Exception as e:  # noqa: BLE001 — единая граница CLI
+                runtime_errors.append({
+                    "index": idx, "repo": sample.repo, "query": sample.query,
+                    "error": repr(e),
+                })
+                continue
 
-    elapsed = time.time() - t0
-    print(f"\nDone: finished={finished}, errors={len(errors)}, "
-          f"elapsed={elapsed:.1f}s")
-    if errors:
-        save_json(errors, output_dir / "errors.json")
-        print("  (first 5 errors):")
-        for e in errors[:5]:
-            print(f"    - {e}")
+            # Сохраним финальный подграф этого сэмпла на диск.
+            save_json(
+                outcome.result.to_diagram(),
+                samples_dir / f"sample_{idx:04d}.json",
+            )
 
-    if args.no_eval:
-        return
+            # Метрики: только если у нас есть эталон по этому ключу.
+            if gold_index is not None:
+                gold = gold_index.lookup(sample.repo, sample.query)
+                if gold is None:
+                    missing_gold.append((sample.repo, sample.query))
+                    continue
+                rep = build_sample_report(
+                    sample_id=gold.sample_id or f"sample_{idx:04d}",
+                    repo=sample.repo,
+                    query=sample.query,
+                    stages=outcome.stages,
+                    gold=gold,
+                )
+                sample_reports.append(rep)
+                report.write(rep)
 
-    print("\nEvaluating against dataset…")
-    eval_result = evaluate_test_set(
-        dataset_csv=args.dataset,
-        results_dir=str(output_dir),
-        result_filename_template="{sample_id}.json",
+    elapsed = time.time() - started
+
+    # 4. Свести метрики и записать сводку.
+    if sample_reports:
+        agg = aggregate(sample_reports)
+        agg["until"] = until.value
+        agg["elapsed_s"] = round(elapsed, 2)
+        save_json(agg, aggregate_path)
+        print(json.dumps(agg, ensure_ascii=False, indent=2))
+
+    print(
+        f"\nready: samples={len(samples)} processed={len(sample_reports)} "
+        f"errors={len(runtime_errors)} missing_gold={len(missing_gold)} "
+        f"elapsed={elapsed:.1f}s",
+        file=sys.stderr,
     )
-    print(format_summary_report(eval_result))
-    report_path = output_dir / "evaluation_report.json"
-    save_json(eval_result.to_dict(), report_path)
-    print(f"\nReport: {report_path}")
+    if runtime_errors:
+        save_json(runtime_errors, out_dir / "errors.json")
+    if missing_gold:
+        save_json(missing_gold, out_dir / "missing_gold.json")
+    return 0
 
 
-def main() -> None:
-    asyncio.run(_run(parse_args()))
+def main() -> int:
+    return asyncio.run(_run_async(parse_args()))
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
