@@ -1,12 +1,12 @@
 User Query: "{query}"
 
-Candidate classes (pre-ranked by semantic similarity, highest first):
+Candidate classes (do not pay attention to order):
 {candidates_json}
 
-Task: choose exactly ONE class from the list above to act as the ANCHOR — the class we will expand to its neighbors to answer the user's query.
+Task: choose exactly ONE class from the list above to act as the ANCHOR — the class we will expand to its neighbors to answer the user's query. You must provide complex reasoning based on analysis of classes names, params and methods.
 
 Return JSON in exactly this shape:
 {{
-  "anchor": "full.node.id.of.the.chosen.class",
-  "reason": "one short sentence explaining the choice"
+  "reason": "one short sentence explaining the choice",
+  "anchor": "full.node.id.of.the.chosen.class"
 }}

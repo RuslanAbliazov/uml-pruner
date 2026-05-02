@@ -56,7 +56,8 @@ def _enrich_for_llm(
                 "name": c.get("name"),
                 "type": c.get("type"),
                 "score": c.get("score"),
-                "methods_preview": _method_preview(node.get("methods") or []),
+                "methods": node.get("methods"),
+                "params": node.get("params"),
             }
         )
     return enriched
