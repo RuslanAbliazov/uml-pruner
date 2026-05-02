@@ -57,6 +57,11 @@ class StageMetrics:
     precision: float = 0.0
     recall: float = 0.0
     f1: float = 0.0
+    # «Удалось ли вытащить хотя бы один required-класс на этом этапе?»
+    # Полезно как грубый бинарный индикатор: даже если recall маленький
+    # из-за множества required, важно понимать, на скольких сэмплах
+    # этап вообще промахнулся мимо ВСЕХ required.
+    hit_any_required: bool = False
     # Только для этапа anchor:
     anchor: str = ""
     anchor_in_required: bool = False
@@ -77,6 +82,7 @@ class StageMetrics:
             "precision": round(self.precision, 4),
             "recall": round(self.recall, 4),
             "f1": round(self.f1, 4),
+            "hit_any_required": self.hit_any_required,
         }
         if self.stage == StageName.ANCHOR.value:
             d.update({
@@ -131,6 +137,10 @@ def metrics_for_stage(outcome: StageOutcome, gold: GoldLabels) -> StageMetrics:
     base.precision = core["precision"]
     base.recall = core["recall"]
     base.f1 = core["f1"]
+    # Хотя бы один required-класс попал в выход этапа.
+    # Если эталонных required нет вовсе — считаем флаг ложным
+    # (нечего ловить → нечего фиксировать как «успех»).
+    base.hit_any_required = bool(gold.required and (predicted & gold.required))
 
     # Спец-поля для anchor-этапа: показывают, попал ли выбранный anchor
     # в эталонные required/useful, и был ли это fallback на top-1.

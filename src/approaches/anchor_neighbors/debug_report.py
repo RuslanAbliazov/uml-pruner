@@ -110,6 +110,12 @@ def aggregate(reports: Iterable[SampleReport]) -> dict:
             ):
                 values = [r[key] for r in ok_rows]
                 agg[f"mean_{key}"] = round(statistics.fmean(values), 4)
+            # «На скольких сэмплах этап вытащил хотя бы один required-класс».
+            # Абсолютное число важно само по себе (даёт грубый счёт «удач»),
+            # доля — для сравнения этапов между собой.
+            n_hit = sum(1 for r in ok_rows if r.get("hit_any_required"))
+            agg["n_with_any_required"] = n_hit
+            agg["any_required_rate"] = round(n_hit / len(ok_rows), 4)
         # Спец-агрегации этапа anchor.
         if stage_name.value == "anchor" and ok_rows:
             agg["anchor_in_required_rate"] = round(
