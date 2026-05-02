@@ -41,6 +41,7 @@ def _method_preview(methods: list[str], limit: int = 8) -> list[str]:
 def _enrich_for_llm(
     candidates: list[dict[str, Any]],
     node_by_id: dict[str, dict[str, Any]],
+    edges: list[dict[str, str]]
 ) -> list[dict[str, Any]]:
     """Сделать LLM-payload: id, name, type, score + сжатый список методов.
 
@@ -58,6 +59,7 @@ def _enrich_for_llm(
                 "score": c.get("score"),
                 "methods": node.get("methods"),
                 "params": node.get("params"),
+                "edges": [e for e in edges if e["node_id_from"] == c["node_id"] or e["node_id_to"] == c["node_id"]]
             }
         )
     return enriched
@@ -68,6 +70,7 @@ async def select_anchor(
     query: str,
     candidates: list[dict[str, Any]],
     node_by_id: dict[str, dict[str, Any]],
+    edges: list[dict[str, str]],
     llm: LLMClient,
 ) -> StageOutcome:
     """Выбрать anchor через LLM. Возвращает StageOutcome.
@@ -82,7 +85,7 @@ async def select_anchor(
             info={"reason": "stage 1 returned no candidates"},
         )
 
-    payload_for_llm = _enrich_for_llm(candidates, node_by_id)
+    payload_for_llm = _enrich_for_llm(candidates, node_by_id, edges)
     user_prompt = prompt_templates.anchor_selection_user(
         query=query, candidates=payload_for_llm
     )

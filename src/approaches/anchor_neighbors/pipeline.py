@@ -115,6 +115,7 @@ class AnchorNeighborsPipeline:
             query=inputs.query,
             candidates=s1.payload["candidates"],
             node_by_id=node_by_id,
+            edges=edges,
             llm=self._llm,
         )
         stages[StageName.ANCHOR] = s2

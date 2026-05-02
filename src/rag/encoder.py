@@ -150,7 +150,7 @@ class LocalEncoder:
         logger.info(
             "Model loaded. max_seq_length=%s, embedding_dim=%s",
             self._model.max_seq_length,
-            self._model.get_sentence_embedding_dimension(),
+            self._model.get_embedding_dimension(),
         )
 
     @property
@@ -162,7 +162,7 @@ class LocalEncoder:
     def dimension(self) -> int:
         self._ensure_loaded()
         assert self._model is not None
-        return int(self._model.get_sentence_embedding_dimension())
+        return int(self._model.get_embedding_dimension())
 
     @property
     def model_name(self) -> str:
