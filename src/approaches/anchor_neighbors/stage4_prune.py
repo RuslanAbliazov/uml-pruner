@@ -26,6 +26,7 @@ import time
 from typing import Any
 
 from src.approaches.anchor_neighbors import prompt_templates
+from src.approaches.anchor_neighbors.llm_trace import LLMTracer
 from src.approaches.anchor_neighbors.stage_outputs import StageName, StageOutcome
 from src.llm.client import LLMClient
 from src.llm.parser import parse_json_response
@@ -67,8 +68,15 @@ async def prune_subgraph(
     sub_nodes: list[dict[str, Any]],
     sub_edges: list[dict[str, Any]],
     llm: LLMClient,
+    tracer: LLMTracer | None = None,
+    sample_id: str = "",
 ) -> StageOutcome:
-    """Прогнать LLM-прунинг и вернуть структурированный StageOutcome."""
+    """Прогнать LLM-прунинг и вернуть структурированный StageOutcome.
+
+    Если передан `tracer` и `sample_id` — пишем последний request/response
+    в `<root>/prune/<sample_id>.{req,resp}.txt` (перезаписывая прошлый).
+    """
+    system_prompt = prompt_templates.prune_system()
     user_prompt = prompt_templates.prune_user(
         query=query,
         anchor=anchor,
@@ -76,17 +84,23 @@ async def prune_subgraph(
         edges=[_edge_for_llm(e) for e in sub_edges],
     )
 
+    if tracer is not None and sample_id:
+        tracer.record_request(StageName.PRUNE, sample_id, system_prompt, user_prompt)
+
     started = time.time()
     try:
-        resp = await llm.call(
-            prompt_templates.prune_system(), user_prompt, json_mode=True
-        )
+        resp = await llm.call(system_prompt, user_prompt, json_mode=True)
     except Exception as e:  # noqa: BLE001 — общая точка обработки внешних сбоев
+        if tracer is not None and sample_id:
+            tracer.record_error(StageName.PRUNE, sample_id, repr(e))
         return StageOutcome(
             stage=StageName.PRUNE,
             aborted="llm_call_failed",
             info={"error": repr(e), "elapsed_s": round(time.time() - started, 2)},
         )
+
+    if tracer is not None and sample_id:
+        tracer.record_response(StageName.PRUNE, sample_id, resp.content)
 
     info = {
         "elapsed_s": round(time.time() - started, 2),

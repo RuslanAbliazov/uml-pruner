@@ -33,6 +33,7 @@ from src.approaches.anchor_neighbors import (
     stage3_expand_neighbors,
     stage4_prune,
 )
+from src.approaches.anchor_neighbors.llm_trace import LLMTracer
 from src.approaches.anchor_neighbors.settings import AnchorNeighborsSettings
 from src.approaches.anchor_neighbors.stage_outputs import (
     STAGE_ORDER,
@@ -73,6 +74,10 @@ class AnchorNeighborsPipeline:
             batch_size=settings.retriever.batch_size,
             cache_dir=settings.retriever.cache_dir,
         )
+        # Трейсер LLM-вызовов: пишет последний request/response на (этап, sample_id).
+        # Папку создаст сам при первом обращении; если sample_id у inputs
+        # пустой — записи просто не будет (см. stage2/stage4).
+        self._tracer = LLMTracer(settings.pipeline.llm_traces_dir)
 
     @property
     def settings(self) -> AnchorNeighborsSettings:
@@ -117,6 +122,8 @@ class AnchorNeighborsPipeline:
             node_by_id=node_by_id,
             edges=edges,
             llm=self._llm,
+            tracer=self._tracer,
+            sample_id=inputs.sample_id,
         )
         stages[StageName.ANCHOR] = s2
         if not s2.is_ok() or until == StageName.ANCHOR:
@@ -143,6 +150,8 @@ class AnchorNeighborsPipeline:
             sub_nodes=s3.payload["sub_nodes"],
             sub_edges=s3.payload["sub_edges"],
             llm=self._llm,
+            tracer=self._tracer,
+            sample_id=inputs.sample_id,
         )
         stages[StageName.PRUNE] = s4
         return _build_outcome(stages, inputs, node_by_id, edges)

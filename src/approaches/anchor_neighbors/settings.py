@@ -62,11 +62,14 @@ class PipelineSettings:
     ``max_subgraph_nodes`` — потолок размера подграфа (anchor+соседи),
     отправляемого в LLM-прун. ``0`` означает «без потолка»; YAML может
     задать ``-1`` или ``null`` — оба интерпретируем как 0.
-    ``outputs_dir`` — куда писать per-sample JSON и debug JSONL.
+    ``outputs_dir``     — куда писать per-sample JSON и debug JSONL.
+    ``llm_traces_dir``  — куда писать последний request/response каждого
+                          LLM-этапа (см. `llm_trace.py`).
     """
     n_candidates: int
     max_subgraph_nodes: int
     outputs_dir: Path
+    llm_traces_dir: Path
 
 
 @dataclass(frozen=True)
@@ -160,16 +163,11 @@ def load_settings(cfg: Any | None = None) -> AnchorNeighborsSettings:
         retry_delay=_required_int(llm_section, "retry_delay", "llm"),
     )
 
-    # outputs_dir — необязательный (есть разумный путь по умолчанию,
-    # завязанный на имя подхода), поэтому читаем мягко.
-    outputs_raw = (
-        own_section.get("outputs_dir")
-        if hasattr(own_section, "get")
-        else None
-    )
-    outputs_dir = Path(outputs_raw) if outputs_raw else Path(
-        "data/results/anchor_neighbors"
-    )
+    # outputs_dir / llm_traces_dir — необязательные ключи (есть разумные
+    # дефолты, завязанные на имя подхода). Читаем мягко.
+    def _opt_path(key: str, default: str) -> Path:
+        raw = own_section.get(key) if hasattr(own_section, "get") else None
+        return Path(raw) if raw else Path(default)
 
     pipeline = PipelineSettings(
         n_candidates=_required_int(
@@ -180,7 +178,8 @@ def load_settings(cfg: Any | None = None) -> AnchorNeighborsSettings:
             if hasattr(own_section, "get")
             else None
         ),
-        outputs_dir=outputs_dir,
+        outputs_dir=_opt_path("outputs_dir", "data/results/anchor_neighbors"),
+        llm_traces_dir=_opt_path("llm_traces_dir", "data/llm_traces/anchor_neighbors"),
     )
 
     return AnchorNeighborsSettings(

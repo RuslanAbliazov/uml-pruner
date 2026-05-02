@@ -17,6 +17,7 @@ import time
 from typing import Any
 
 from src.approaches.anchor_neighbors import prompt_templates
+from src.approaches.anchor_neighbors.llm_trace import LLMTracer
 from src.approaches.anchor_neighbors.stage_outputs import StageName, StageOutcome
 from src.llm.client import LLMClient
 from src.llm.parser import parse_json_response
@@ -72,11 +73,18 @@ async def select_anchor(
     node_by_id: dict[str, dict[str, Any]],
     edges: list[dict[str, str]],
     llm: LLMClient,
+    tracer: LLMTracer | None = None,
+    sample_id: str = "",
 ) -> StageOutcome:
     """Выбрать anchor через LLM. Возвращает StageOutcome.
 
     Аргументы — ТОЛЬКО (repo, query)-уровневые данные (запрос + диаграмма).
     Никакого ground-truth тут нет и быть не должно.
+
+    Если передан `tracer` и непустой `sample_id`, перед вызовом LLM
+    записываем последний request, после вызова — last response (или текст
+    ошибки, если запрос упал). Файлы перезаписываются — на диске лежит
+    только последний прогон по этому `sample_id`.
     """
     if not candidates:
         return StageOutcome(
@@ -86,23 +94,33 @@ async def select_anchor(
         )
 
     payload_for_llm = _enrich_for_llm(candidates, node_by_id, edges)
+    system_prompt = prompt_templates.anchor_selection_system()
     user_prompt = prompt_templates.anchor_selection_user(
         query=query, candidates=payload_for_llm
     )
 
+    # Сохранить запрос ДО вызова LLM: даже если запрос упадёт по таймауту,
+    # на диске останется ровно тот payload, что был отправлен.
+    if tracer is not None and sample_id:
+        tracer.record_request(StageName.ANCHOR, sample_id, system_prompt, user_prompt)
+
     started = time.time()
     try:
-        resp = await llm.call(
-            prompt_templates.anchor_selection_system(),
-            user_prompt,
-            json_mode=True,
-        )
+        resp = await llm.call(system_prompt, user_prompt, json_mode=True)
     except Exception as e:  # noqa: BLE001 — единая точка обработки внешних сбоев
+        if tracer is not None and sample_id:
+            tracer.record_error(StageName.ANCHOR, sample_id, repr(e))
         return StageOutcome(
             stage=StageName.ANCHOR,
             aborted="llm_call_failed",
             info={"error": repr(e), "elapsed_s": round(time.time() - started, 2)},
         )
+
+    # Сохранить сырой ответ. Делаем сразу после возврата, до парсинга:
+    # если парсинг упадёт — у нас на диске останется именно то, что
+    # вернула модель.
+    if tracer is not None and sample_id:
+        tracer.record_response(StageName.ANCHOR, sample_id, resp.content)
 
     info = {
         "elapsed_s": round(time.time() - started, 2),
