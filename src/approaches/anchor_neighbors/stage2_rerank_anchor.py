@@ -1,23 +1,27 @@
-"""Этап 2 (альтернатива) — cross-encoder reranker выбирает anchor.
+"""Этап 2 (альтернатива) — cross-encoder reranker выбирает anchor(ы).
 
 Берёт top-K кандидатов от RAG (этап 1), скорит каждый против запроса
-кросс-энкодером и возвращает StageOutcome с node_id наивысшего score.
+кросс-энкодером и возвращает StageOutcome с top-N node_id.
 
 Контракт совместим с ``stage2_select_anchor.select_anchor``:
 
 * На вход — те же поля ``query`` / ``candidates`` / ``node_by_id`` /
-  ``edges``. ``llm`` / ``tracer`` / ``sample_id`` принимаются для
-  единообразия, но не используются (LLM-вызовов здесь нет).
-* На выход — `StageOutcome(stage=ANCHOR, node_ids=[chosen], payload={...})`
-  с тем же набором ключей в ``payload``, что и LLM-вариант, плюс
-  ``payload.scores`` — отсортированный по убыванию список ``[node_id, score]``
-  для дебага.
+  ``edges`` плюс ``n_anchors`` (сколько якорей оставить). ``llm`` /
+  ``tracer`` / ``sample_id`` принимаются для единообразия, но не
+  используются (LLM-вызовов здесь нет).
+* На выход — `StageOutcome(stage=ANCHOR, node_ids=[top1, ..., topN], ...)`.
+  В ``payload`` лежат:
+    - ``anchor``  : top-1 (для обратной совместимости — метрики и старые
+                    потребители читают это поле);
+    - ``anchors`` : полный список выбранных якорей (длиной до n_anchors);
+    - ``reason`` / ``fallback`` / ``selector`` — те же поля, что и в
+      LLM-варианте.
 * ``payload.fallback`` всегда ``False``: галлюцинаций тут не бывает,
   reranker физически не может вернуть id вне списка кандидатов.
 
 Метрики (см. ``metrics.py``) и debug-отчёт работают без изменений: они
 смотрят только на ``stage`` / ``node_ids`` / ``payload['fallback']`` и
-``payload['anchor']``.
+``payload['anchor']`` (= top-1 при multi-anchor).
 
 Тексты узлов формируются тем же ``src.rag.node_to_text``, что используется
 для построения индекса эмбеддингов — это даёт ретриверу и реранкеру одно и
@@ -61,17 +65,22 @@ async def select_anchor_via_reranker(
     node_by_id: dict[str, dict[str, Any]],
     edges: list[dict[str, str]],
     reranker: LocalReranker,
+    n_anchors: int = 1,
     # Принято для единообразия с LLM-вариантом; не используется.
     llm: Any = None,
     tracer: Any = None,
     sample_id: str = "",
 ) -> StageOutcome:
-    """Выбрать anchor через cross-encoder reranker. Возвращает StageOutcome.
+    """Выбрать top-N anchor'ов через cross-encoder reranker.
 
     `async`, чтобы сигнатура совпадала с LLM-вариантом и pipeline мог
     вызывать через ``await``. Сам reranker синхронный (CPU/GPU-bound), но
     обёртка от этого не страдает — выполнение быстрое и блокирующее именно
     то, что нам нужно (один прогон на сэмпл).
+
+    ``n_anchors`` — сколько якорей вернуть. Pipeline уже валидирует, что
+    ``1 <= n_anchors <= n_candidates`` (см. settings.py), но мы дополнительно
+    клампим на длину фактического списка кандидатов для безопасности.
     """
     if not candidates:
         return StageOutcome(
@@ -101,22 +110,33 @@ async def select_anchor_via_reranker(
         key=lambda kv: kv[1],
         reverse=True,
     )
-    top, top_score = ranked[0]
+    n = max(1, min(n_anchors, len(ranked)))
+    top_n = ranked[:n]
+    anchors = [c["node_id"] for c, _ in top_n]
+    top_anchor, top_score = top_n[0]
 
     info = {
         "elapsed_s": round(time.time() - started, 2),
         "n_candidates": len(candidates),
+        "n_anchors_requested": n_anchors,
+        "n_anchors_returned": len(anchors),
         "reranker_model": reranker.model_name,
     }
 
     return StageOutcome(
         stage=StageName.ANCHOR,
-        node_ids=[top["node_id"]],
+        # node_ids = все выбранные якоря, упорядочены по score (desc).
+        # Метрики смотрят на это множество как на «выход этапа».
+        node_ids=list(anchors),
         payload={
-            "anchor": top["node_id"],
-            # Для совместимости с LLM-веткой держим то же поле reason —
-            # debug-отчёт его читает напрямую.
-            "reason": f"reranker top-1 (score={top_score:.4f})",
+            # top-1 — для обратной совместимости с метриками и
+            # debug-отчётом, которые читают именно `payload['anchor']`.
+            "anchor": top_anchor["node_id"],
+            "anchors": list(anchors),
+            "reason": (
+                f"reranker top-{len(anchors)} "
+                f"(top-1 score={top_score:.4f})"
+            ),
             "fallback": False,
             "selector": "reranker",
             "top_score": round(top_score, 6),

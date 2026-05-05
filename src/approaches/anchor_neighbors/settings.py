@@ -79,12 +79,15 @@ ANCHOR_SELECTORS = ("llm", "reranker")
 class PipelineSettings:
     """Гиперпараметры самого подхода ``anchor_neighbors``.
 
-    ``max_subgraph_nodes`` — потолок размера подграфа (anchor+соседи),
+    ``max_subgraph_nodes`` — потолок размера подграфа (anchors+соседи),
     отправляемого в LLM-прун. ``0`` означает «без потолка»; YAML может
     задать ``-1`` или ``null`` — оба интерпретируем как 0.
+    ``n_anchors`` — сколько якорей оставить после stage 2.
+    ``1`` сохраняет историческое поведение; ``>1`` — multi-anchor режим.
+    Должно выполняться ``1 <= n_anchors <= n_candidates``.
     ``anchor_selector`` — какой из двух движков использует stage 2:
     ``"llm"`` (LLM выбирает один из top-K) или ``"reranker"``
-    (cross-encoder ранжирует и берёт top-1).
+    (cross-encoder ранжирует и берёт top-N).
     ``outputs_dir``     — куда писать per-sample JSON и debug JSONL.
                           Имя селектора автоматически дописывается как
                           подпапка (``.../llm/``, ``.../reranker/``), чтобы
@@ -94,6 +97,7 @@ class PipelineSettings:
                           подпапкой по имени селектора.
     """
     n_candidates: int
+    n_anchors: int
     max_subgraph_nodes: int
     anchor_selector: str
     outputs_dir: Path
@@ -234,10 +238,38 @@ def load_settings(cfg: Any | None = None) -> AnchorNeighborsSettings:
         raw = own_section.get(key) if hasattr(own_section, "get") else None
         return Path(raw) if raw else Path(default)
 
+    n_candidates = _required_int(
+        own_section, "n_candidates", "approaches.anchor_neighbors"
+    )
+    # n_anchors — необязательный, дефолт 1 (исторический режим). Жёсткие
+    # инварианты проверяем здесь, чтобы pipeline ничего не валидировал.
+    n_anchors_raw = (
+        own_section.get("n_anchors") if hasattr(own_section, "get") else None
+    )
+    if n_anchors_raw is None:
+        n_anchors = 1
+    else:
+        try:
+            n_anchors = int(n_anchors_raw)
+        except (TypeError, ValueError):
+            raise ConfigError(
+                f"approaches.anchor_neighbors.n_anchors: ожидалось целое, "
+                f"получили {n_anchors_raw!r}"
+            )
+    if n_anchors < 1:
+        raise ConfigError(
+            f"approaches.anchor_neighbors.n_anchors должен быть >= 1, "
+            f"получили {n_anchors}"
+        )
+    if n_anchors > n_candidates:
+        raise ConfigError(
+            f"approaches.anchor_neighbors.n_anchors ({n_anchors}) не может "
+            f"превышать n_candidates ({n_candidates})"
+        )
+
     pipeline = PipelineSettings(
-        n_candidates=_required_int(
-            own_section, "n_candidates", "approaches.anchor_neighbors"
-        ),
+        n_candidates=n_candidates,
+        n_anchors=n_anchors,
         max_subgraph_nodes=_coerce_subgraph_cap(
             own_section.get("max_subgraph_nodes")
             if hasattr(own_section, "get")

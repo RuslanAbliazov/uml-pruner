@@ -133,7 +133,9 @@ class AnchorNeighborsPipeline:
 
         # ---- этап 2 ---------------------------------------------------
         # Развилка по `anchor_selector`. Обе ветки возвращают одинаковый
-        # `StageOutcome(stage=ANCHOR, ...)` — дальше pipeline их не различает.
+        # `StageOutcome(stage=ANCHOR, ...)` с полями `payload.anchors` (top-N)
+        # и `payload.anchor` (top-1 — для обратной совместимости).
+        n_anchors = self._settings.pipeline.n_anchors
         if self._settings.pipeline.anchor_selector == "reranker":
             assert self._reranker is not None  # гарантировано __init__
             s2 = await stage2_rerank_anchor.select_anchor_via_reranker(
@@ -142,6 +144,7 @@ class AnchorNeighborsPipeline:
                 node_by_id=node_by_id,
                 edges=edges,
                 reranker=self._reranker,
+                n_anchors=n_anchors,
             )
         else:
             s2 = await stage2_select_anchor.select_anchor(
@@ -150,6 +153,7 @@ class AnchorNeighborsPipeline:
                 node_by_id=node_by_id,
                 edges=edges,
                 llm=self._llm,
+                n_anchors=n_anchors,
                 tracer=self._tracer,
                 sample_id=inputs.sample_id,
             )
@@ -157,11 +161,15 @@ class AnchorNeighborsPipeline:
         if not s2.is_ok() or until == StageName.ANCHOR:
             return _build_outcome(stages, inputs, node_by_id, edges)
 
-        anchor = s2.payload["anchor"]
+        # `anchors` — основной список; если по какой-то причине его нет в
+        # payload (например, кастомный stage2), берём top-1 как раньше.
+        anchors: list[str] = list(
+            s2.payload.get("anchors") or [s2.payload["anchor"]]
+        )
 
         # ---- этап 3 ---------------------------------------------------
         s3 = stage3_expand_neighbors.expand_neighbors(
-            anchor=anchor,
+            anchors=anchors,
             nodes=nodes,
             edges=edges,
             node_by_id=node_by_id,
@@ -174,7 +182,7 @@ class AnchorNeighborsPipeline:
         # ---- этап 4 ---------------------------------------------------
         s4 = await stage4_prune.prune_subgraph(
             query=inputs.query,
-            anchor=anchor,
+            anchors=anchors,
             sub_nodes=s3.payload["sub_nodes"],
             sub_edges=s3.payload["sub_edges"],
             llm=self._llm,

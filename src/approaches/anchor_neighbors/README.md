@@ -17,14 +17,19 @@
      `reranker:` section) scores every candidate against the query, and
      the top-1 becomes the anchor. No LLM call on this stage.
 3. **Expand by neighborhood.**
-   Every direct neighbor of the anchor is collected — both outgoing AND
-   incoming edges, every relation kind (Inheritance / Association /
-   Dependency / others). Self-loops are skipped.
+   For every anchor, all direct neighbors are collected — both outgoing
+   AND incoming edges, every relation kind (Inheritance / Association /
+   Dependency / others). Self-loops are skipped. Neighborhoods of all
+   anchors are merged into a single subgraph; if it overflows
+   `max_subgraph_nodes`, anchors are kept and the non-anchor part is
+   trimmed by edge multiplicity to the anchor set.
 4. **Prune (LLM).**
-   The anchor + its neighbors plus the edges between them are sent to the
-   LLM, which classifies each node as REQUIRED / USEFUL / IRRELEVANT
-   (`prompts/prune_system.txt`, `prompts/prune_user.txt`). The anchor
-   itself is force-kept.
+   The merged subgraph (anchors + their neighbors + edges between them) is
+   sent to the LLM, which classifies each node as REQUIRED / USEFUL /
+   IRRELEVANT (`prompts/prune_system.txt`, `prompts/prune_user.txt`). The
+   prompt itself is single-anchor (only the top-1 anchor is named); the
+   final REQUIRED/USEFUL set is exactly what the LLM returns — no anchor
+   is force-kept after the LLM call.
 
 The result is the standard `{nodes, edges, metadata}` shape consumed by
 `src/eval/evaluator.py`.

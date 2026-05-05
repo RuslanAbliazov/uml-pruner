@@ -66,6 +66,29 @@ def _enrich_for_llm(
     return enriched
 
 
+def _fill_anchors(
+    primary: str,
+    candidates: list[dict[str, Any]],
+    n_anchors: int,
+) -> list[str]:
+    """Дополнить ``primary`` следующими по RAG-score кандидатами до N штук.
+
+    ``candidates`` уже упорядочен по убыванию RAG-score (этап 1 это
+    гарантирует). Дубликат ``primary`` исключаем.
+    """
+    anchors: list[str] = [primary]
+    if n_anchors <= 1:
+        return anchors
+    for c in candidates:
+        nid = c.get("node_id")
+        if not nid or nid == primary:
+            continue
+        anchors.append(nid)
+        if len(anchors) >= n_anchors:
+            break
+    return anchors
+
+
 async def select_anchor(
     *,
     query: str,
@@ -73,13 +96,22 @@ async def select_anchor(
     node_by_id: dict[str, dict[str, Any]],
     edges: list[dict[str, str]],
     llm: LLMClient,
+    n_anchors: int = 1,
     tracer: LLMTracer | None = None,
     sample_id: str = "",
 ) -> StageOutcome:
-    """Выбрать anchor через LLM. Возвращает StageOutcome.
+    """Выбрать anchor через LLM, дополнить до ``n_anchors`` по RAG-score.
 
     Аргументы — ТОЛЬКО (repo, query)-уровневые данные (запрос + диаграмма).
     Никакого ground-truth тут нет и быть не должно.
+
+    Текущий промпт LLM просит «pick ONE». Поэтому для multi-anchor
+    режима (``n_anchors > 1``) мы:
+      1) спрашиваем LLM один anchor (как раньше);
+      2) добавляем top следующих кандидатов по RAG-score, пропуская
+         выбранный LLM, до общего числа ``n_anchors``.
+
+    При ``n_anchors == 1`` поведение полностью совпадает с прежним.
 
     Если передан `tracer` и непустой `sample_id`, перед вызовом LLM
     записываем последний request, после вызова — last response (или текст
@@ -150,25 +182,33 @@ async def select_anchor(
 
     # Хороший случай: LLM выбрал валидный из списка кандидатов.
     if isinstance(chosen, str) and chosen in valid_ids:
+        anchors = _fill_anchors(chosen, candidates, n_anchors)
         return StageOutcome(
             stage=StageName.ANCHOR,
-            node_ids=[chosen],
-            payload={"anchor": chosen, "reason": reason, "fallback": False},
-            info=info,
+            node_ids=list(anchors),
+            payload={
+                "anchor": chosen,
+                "anchors": list(anchors),
+                "reason": reason,
+                "fallback": False,
+            },
+            info={**info, "n_anchors_returned": len(anchors)},
         )
 
     # Плохой случай: галлюцинация / пустой / не из списка. Берём top-1
     # RAG-кандидата как самый разумный fallback (порядок гарантирован
     # этапом 1 — кандидаты идут в порядке убывания score).
     fallback_id = candidates[0]["node_id"]
+    anchors = _fill_anchors(fallback_id, candidates, n_anchors)
     return StageOutcome(
         stage=StageName.ANCHOR,
-        node_ids=[fallback_id],
+        node_ids=list(anchors),
         payload={
             "anchor": fallback_id,
+            "anchors": list(anchors),
             "reason": reason or "<empty>",
             "fallback": True,
             "llm_returned": chosen,
         },
-        info=info,
+        info={**info, "n_anchors_returned": len(anchors)},
     )
