@@ -14,6 +14,8 @@
 
 * ``llm.*``                              — модель, base_url, api_key, ...
 * ``embeddings.*``                       — модель эмбеддингов, device, ...
+* ``reranker.*``                         — модель кросс-энкодера (только если
+                                           ``anchor_selector == "reranker"``)
 * ``approaches.anchor_neighbors.*``      — гиперпараметры самого подхода
 """
 
@@ -43,6 +45,21 @@ class RetrieverSettings:
 
 
 @dataclass(frozen=True)
+class RerankerSettings:
+    """Параметры кросс-энкодера для альтернативного stage 2.
+
+    Заполняется ИЗ секции ``reranker:`` YAML и используется только когда
+    ``PipelineSettings.anchor_selector == "reranker"``. В режиме
+    ``"llm"`` поле ``AnchorNeighborsSettings.reranker`` равно ``None`` —
+    секция YAML может вовсе отсутствовать.
+    """
+    model_name: str
+    device: str
+    batch_size: int
+    max_seq_length: int | None  # None == «дефолт модели»
+
+
+@dataclass(frozen=True)
 class LLMSettings:
     """Соединение с LLM. ``api_key`` обязан быть непустой строкой."""
     model: str
@@ -55,6 +72,9 @@ class LLMSettings:
     retry_delay: int
 
 
+ANCHOR_SELECTORS = ("llm", "reranker")
+
+
 @dataclass(frozen=True)
 class PipelineSettings:
     """Гиперпараметры самого подхода ``anchor_neighbors``.
@@ -62,22 +82,35 @@ class PipelineSettings:
     ``max_subgraph_nodes`` — потолок размера подграфа (anchor+соседи),
     отправляемого в LLM-прун. ``0`` означает «без потолка»; YAML может
     задать ``-1`` или ``null`` — оба интерпретируем как 0.
+    ``anchor_selector`` — какой из двух движков использует stage 2:
+    ``"llm"`` (LLM выбирает один из top-K) или ``"reranker"``
+    (cross-encoder ранжирует и берёт top-1).
     ``outputs_dir``     — куда писать per-sample JSON и debug JSONL.
+                          Имя селектора автоматически дописывается как
+                          подпапка (``.../llm/``, ``.../reranker/``), чтобы
+                          результаты двух прогонов не затирали друг друга.
     ``llm_traces_dir``  — куда писать последний request/response каждого
-                          LLM-этапа (см. `llm_trace.py`).
+                          LLM-этапа (см. `llm_trace.py`). Тот же приём с
+                          подпапкой по имени селектора.
     """
     n_candidates: int
     max_subgraph_nodes: int
+    anchor_selector: str
     outputs_dir: Path
     llm_traces_dir: Path
 
 
 @dataclass(frozen=True)
 class AnchorNeighborsSettings:
-    """Полный набор настроек, нужных пайплайну."""
+    """Полный набор настроек, нужных пайплайну.
+
+    ``reranker`` равен ``None``, когда ``pipeline.anchor_selector == "llm"``
+    — в этом режиме секция ``reranker:`` в YAML может отсутствовать.
+    """
     retriever: RetrieverSettings
     llm: LLMSettings
     pipeline: PipelineSettings
+    reranker: RerankerSettings | None = None
 
 
 # ---- внутренние помощники чтения YAML ------------------------------------
@@ -128,6 +161,23 @@ def _coerce_subgraph_cap(raw: Any) -> int:
     return n if n > 0 else 0
 
 
+def _coerce_optional_positive(raw: Any, label: str) -> int | None:
+    """Принять YAML-значение, где None / -1 == «дефолт» (None).
+
+    Используется для ``reranker.max_seq_length``: positive int — как есть,
+    null / отрицательное / 0 — None (отдать модели её собственный дефолт).
+    """
+    if raw is None:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        raise ConfigError(
+            f"{label}: ожидалось целое или null, получили {raw!r}"
+        )
+    return n if n > 0 else None
+
+
 # ---- сборка финальных настроек -------------------------------------------
 
 def load_settings(cfg: Any | None = None) -> AnchorNeighborsSettings:
@@ -163,8 +213,23 @@ def load_settings(cfg: Any | None = None) -> AnchorNeighborsSettings:
         retry_delay=_required_int(llm_section, "retry_delay", "llm"),
     )
 
-    # outputs_dir / llm_traces_dir — необязательные ключи (есть разумные
-    # дефолты, завязанные на имя подхода). Читаем мягко.
+    # ---- anchor_selector ---------------------------------------------------
+    # Дефолт `"llm"` сохраняет старое поведение: если ключа нет в YAML,
+    # подход работает ровно как раньше.
+    anchor_selector_raw = (
+        own_section.get("anchor_selector") if hasattr(own_section, "get") else None
+    ) or "llm"
+    anchor_selector = str(anchor_selector_raw).strip().lower()
+    if anchor_selector not in ANCHOR_SELECTORS:
+        raise ConfigError(
+            f"approaches.anchor_neighbors.anchor_selector: ожидалось одно из "
+            f"{ANCHOR_SELECTORS}, получили {anchor_selector_raw!r}"
+        )
+
+    # ---- outputs_dir / llm_traces_dir -------------------------------------
+    # Необязательные ключи (есть разумные дефолты, завязанные на имя подхода).
+    # Дополнительно дописываем подпапку с именем селектора, чтобы прогоны
+    # `llm` и `reranker` лежали бок о бок и не затирали друг друга.
     def _opt_path(key: str, default: str) -> Path:
         raw = own_section.get(key) if hasattr(own_section, "get") else None
         return Path(raw) if raw else Path(default)
@@ -178,12 +243,33 @@ def load_settings(cfg: Any | None = None) -> AnchorNeighborsSettings:
             if hasattr(own_section, "get")
             else None
         ),
-        outputs_dir=_opt_path("outputs_dir", "data/results/anchor_neighbors"),
-        llm_traces_dir=_opt_path("llm_traces_dir", "data/llm_traces/anchor_neighbors"),
+        anchor_selector=anchor_selector,
+        outputs_dir=_opt_path("outputs_dir", "data/results/anchor_neighbors")
+        / anchor_selector,
+        llm_traces_dir=_opt_path(
+            "llm_traces_dir", "data/llm_traces/anchor_neighbors"
+        )
+        / anchor_selector,
     )
 
+    # ---- reranker (опционально) -------------------------------------------
+    reranker: RerankerSettings | None = None
+    if anchor_selector == "reranker":
+        rr_section = _section(cfg, "reranker")
+        reranker = RerankerSettings(
+            model_name=_required(rr_section, "model", "reranker"),
+            device=_required(rr_section, "device", "reranker"),
+            batch_size=_required_int(rr_section, "batch_size", "reranker"),
+            max_seq_length=_coerce_optional_positive(
+                rr_section.get("max_seq_length")
+                if hasattr(rr_section, "get")
+                else None,
+                "reranker.max_seq_length",
+            ),
+        )
+
     return AnchorNeighborsSettings(
-        retriever=retriever, llm=llm, pipeline=pipeline
+        retriever=retriever, llm=llm, pipeline=pipeline, reranker=reranker
     )
 
 

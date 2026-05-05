@@ -8,9 +8,14 @@
    The embedding retriever returns the top-`n_candidates` classes most
    similar to the user's query. Default is 10; configurable via
    `approaches.anchor_neighbors.n_candidates` in `configs/config.yaml`.
-2. **Pick the anchor (LLM).**
-   The LLM is asked to pick the SINGLE best anchor out of those candidates.
-   See `prompts/select_system.txt`, `prompts/select_user.txt`.
+2. **Pick the anchor.** Two interchangeable strategies, selected by the
+   `approaches.anchor_neighbors.anchor_selector` key in the YAML:
+   - `"llm"` (default) — the LLM is asked to pick the single best anchor
+     out of the candidates. See `prompts/select_system.txt`,
+     `prompts/select_user.txt`.
+   - `"reranker"` — a cross-encoder (configured under the top-level
+     `reranker:` section) scores every candidate against the query, and
+     the top-1 becomes the anchor. No LLM call on this stage.
 3. **Expand by neighborhood.**
    Every direct neighbor of the anchor is collected — both outgoing AND
    incoming edges, every relation kind (Inheritance / Association /
@@ -89,10 +94,56 @@ approaches:
     n_candidates: 10            # how many candidates the retriever returns
     max_subgraph_nodes: 200     # safety cap on anchor + neighbors size
                                 # (-1 / null = disable cap)
+    anchor_selector: "llm"      # "llm" | "reranker" — which engine picks
+                                # the single anchor on stage 2
+    outputs_dir: "data/results/anchor_neighbors"
+    llm_traces_dir: "data/llm_traces/anchor_neighbors"
+
+# Used only when anchor_selector == "reranker":
+reranker:
+  model: "BAAI/bge-reranker-v2-m3"
+  device: "auto"
+  batch_size: 16
+  max_seq_length: 512           # null / -1 => use model default
 ```
 
 The retrieval model and cache dir are read from the shared `embeddings:`
 block (same one used by `scripts/build_index.py`).
+
+The selector name is automatically appended to `outputs_dir` and
+`llm_traces_dir` as a subfolder, so two runs (one with `"llm"`, one with
+`"reranker"`) land side-by-side and never overwrite each other:
+
+```
+data/results/anchor_neighbors/
+├── llm/
+│   ├── samples/...
+│   ├── report.jsonl
+│   └── aggregate.json
+└── reranker/
+    ├── samples/...
+    ├── report.jsonl
+    └── aggregate.json
+```
+
+### Comparing the two anchor selectors
+
+```bash
+# 1) Run the LLM-based selector (current behaviour).
+#    Set `anchor_selector: "llm"` in the YAML, then:
+python src/approaches/anchor_neighbors/run.py --limit 50
+
+# 2) Switch the YAML key to `anchor_selector: "reranker"` and re-run:
+python src/approaches/anchor_neighbors/run.py --limit 50
+
+# 3) Diff the aggregate metrics:
+diff data/results/anchor_neighbors/llm/aggregate.json \
+     data/results/anchor_neighbors/reranker/aggregate.json
+```
+
+The shape of `aggregate.json` is identical for both runs (the `anchor`
+stage exposes the same fields — `anchor_in_required_rate`, `mean_recall`,
+etc.), so the two files are directly comparable.
 
 ## Source layout
 
@@ -101,14 +152,20 @@ easy to read in isolation:
 
 ```
 anchor_neighbors/
-├── run.py            # CLI entry point — invoke the approach over the dataset
-├── runner.py         # Orchestrator: glues the four stages into ApproachResult
-├── config.py         # AnchorNeighborsConfig + build_runner factory
-├── candidates.py     # Stage 1 — RAG retrieval (CandidateFinder)
-├── select_anchor.py  # Stage 2 — LLM picks one anchor (with fallback)
-├── expand.py         # Stage 3 — collect neighborhood + cap
-├── prune.py          # Stage 4 — LLM REQUIRED / USEFUL / IRRELEVANT
-├── prompts.py        # Tiny wrappers over ./prompts/*.txt
+├── run.py                       # CLI entry point — runs the approach over the dataset
+├── pipeline.py                  # Orchestrator: glues the four stages into ApproachResult
+├── settings.py                  # Reads YAML; build_runner factory
+├── stage_outputs.py             # Common StageOutcome contract
+├── stage1_retrieve.py           # Stage 1 — RAG retrieval (CandidateRetriever)
+├── stage2_select_anchor.py      # Stage 2a — LLM picks one anchor (with fallback)
+├── stage2_rerank_anchor.py      # Stage 2b — cross-encoder picks top-1 anchor
+├── stage3_expand_neighbors.py   # Stage 3 — collect neighborhood + cap
+├── stage4_prune.py              # Stage 4 — LLM REQUIRED / USEFUL / IRRELEVANT
+├── prompt_templates.py          # Tiny wrappers over ./prompts/*.txt
+├── llm_trace.py                 # Per-stage last-call request/response dump
+├── ground_truth.py              # Loads gold labels by (repo, query)
+├── metrics.py                   # Per-stage quality metrics vs. gold
+├── debug_report.py              # JSONL writer + aggregation
 ├── prompts/
 │   ├── select_{system,user}.txt
 │   └── prune_{system,user}.txt

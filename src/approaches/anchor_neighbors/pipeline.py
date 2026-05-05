@@ -29,6 +29,7 @@ from typing import Any
 from src.approaches._common.compressor import filter_subgraph
 from src.approaches.anchor_neighbors import (
     stage1_retrieve,
+    stage2_rerank_anchor,
     stage2_select_anchor,
     stage3_expand_neighbors,
     stage4_prune,
@@ -43,6 +44,7 @@ from src.approaches.anchor_neighbors.stage_outputs import (
 from src.core.types import ApproachInputs, ApproachResult
 from src.eval.annotations import diagram_filename_for_repo
 from src.llm.client import LLMClient
+from src.rag.reranker import LocalReranker, RerankerConfig
 
 NAME = "anchor_neighbors"
 
@@ -78,6 +80,20 @@ class AnchorNeighborsPipeline:
         # Папку создаст сам при первом обращении; если sample_id у inputs
         # пустой — записи просто не будет (см. stage2/stage4).
         self._tracer = LLMTracer(settings.pipeline.llm_traces_dir)
+        # Reranker инстанцируется лениво — только если выбрана ветка
+        # `anchor_selector == "reranker"`. В режиме `"llm"` модель никогда
+        # не загружается, и тяжёлые torch-зависимости не нужны.
+        self._reranker: LocalReranker | None = None
+        if settings.pipeline.anchor_selector == "reranker":
+            assert settings.reranker is not None  # гарантировано load_settings()
+            self._reranker = LocalReranker(
+                RerankerConfig(
+                    model_name=settings.reranker.model_name,
+                    device=settings.reranker.device,
+                    batch_size=settings.reranker.batch_size,
+                    max_seq_length=settings.reranker.max_seq_length,
+                )
+            )
 
     @property
     def settings(self) -> AnchorNeighborsSettings:
@@ -116,15 +132,27 @@ class AnchorNeighborsPipeline:
             return _build_outcome(stages, inputs, node_by_id, edges)
 
         # ---- этап 2 ---------------------------------------------------
-        s2 = await stage2_select_anchor.select_anchor(
-            query=inputs.query,
-            candidates=s1.payload["candidates"],
-            node_by_id=node_by_id,
-            edges=edges,
-            llm=self._llm,
-            tracer=self._tracer,
-            sample_id=inputs.sample_id,
-        )
+        # Развилка по `anchor_selector`. Обе ветки возвращают одинаковый
+        # `StageOutcome(stage=ANCHOR, ...)` — дальше pipeline их не различает.
+        if self._settings.pipeline.anchor_selector == "reranker":
+            assert self._reranker is not None  # гарантировано __init__
+            s2 = await stage2_rerank_anchor.select_anchor_via_reranker(
+                query=inputs.query,
+                candidates=s1.payload["candidates"],
+                node_by_id=node_by_id,
+                edges=edges,
+                reranker=self._reranker,
+            )
+        else:
+            s2 = await stage2_select_anchor.select_anchor(
+                query=inputs.query,
+                candidates=s1.payload["candidates"],
+                node_by_id=node_by_id,
+                edges=edges,
+                llm=self._llm,
+                tracer=self._tracer,
+                sample_id=inputs.sample_id,
+            )
         stages[StageName.ANCHOR] = s2
         if not s2.is_ok() or until == StageName.ANCHOR:
             return _build_outcome(stages, inputs, node_by_id, edges)
