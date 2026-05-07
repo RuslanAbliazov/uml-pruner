@@ -57,6 +57,9 @@ class StageMetrics:
     precision: float = 0.0
     recall: float = 0.0
     f1: float = 0.0
+    true_positive: int = 0
+    predicted: int = 0
+    gold_all: int = 0
     # «Удалось ли вытащить хотя бы один required-класс на этом этапе?»
     # Полезно как грубый бинарный индикатор: даже если recall маленький
     # из-за множества required, важно понимать, на скольких сэмплах
@@ -82,6 +85,9 @@ class StageMetrics:
             "precision": round(self.precision, 4),
             "recall": round(self.recall, 4),
             "f1": round(self.f1, 4),
+            "true_positive": self.true_positive,
+            "predicted": self.predicted,
+            "gold_all": self.gold_all,
             "hit_any_required": self.hit_any_required,
         }
         if self.stage == StageName.ANCHOR.value:
@@ -112,6 +118,9 @@ def _compute_core(predicted: set[str], gold: GoldLabels) -> dict[str, float]:
         "precision": precision,
         "recall": recall,
         "f1": f1,
+        "true_positive": len(tp),
+        "predicted": len(predicted),
+        "gold_all": len(gold_all)
     }
 
 
@@ -137,6 +146,9 @@ def metrics_for_stage(outcome: StageOutcome, gold: GoldLabels) -> StageMetrics:
     base.precision = core["precision"]
     base.recall = core["recall"]
     base.f1 = core["f1"]
+    base.true_positive = core["true_positive"]
+    base.predicted = core["predicted"]
+    base.gold_all = core["gold_all"]
     # Хотя бы один required-класс попал в выход этапа.
     # Если эталонных required нет вовсе — считаем флаг ложным
     # (нечего ловить → нечего фиксировать как «успех»).

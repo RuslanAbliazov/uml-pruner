@@ -107,6 +107,9 @@ def aggregate(reports: Iterable[SampleReport]) -> dict:
                 "precision",
                 "recall",
                 "f1",
+                "true_positive",
+                "predicted",
+                "gold_all"
             ):
                 values = [r[key] for r in ok_rows]
                 agg[f"mean_{key}"] = round(statistics.fmean(values), 4)
@@ -114,8 +117,12 @@ def aggregate(reports: Iterable[SampleReport]) -> dict:
             # Абсолютное число важно само по себе (даёт грубый счёт «удач»),
             # доля — для сравнения этапов между собой.
             n_hit = sum(1 for r in ok_rows if r.get("hit_any_required"))
+            micro_precision = sum([r["true_positive"] for r in ok_rows]) / sum([r["predicted"] for r in ok_rows])
+            micro_recall = sum([r["true_positive"] for r in ok_rows]) / sum([r["gold_all"] for r in ok_rows])
             agg["n_with_any_required"] = n_hit
             agg["any_required_rate"] = round(n_hit / len(ok_rows), 4)
+            agg["micro_precision"] = micro_precision
+            agg["micro_recall"] = micro_recall
         # Спец-агрегации этапа anchor.
         if stage_name.value == "anchor" and ok_rows:
             agg["anchor_in_required_rate"] = round(

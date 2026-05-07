@@ -26,6 +26,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import json
+from pathlib import Path
+
 from src.approaches._common.compressor import filter_subgraph
 from src.approaches.anchor_neighbors import (
     stage1_retrieve,
@@ -56,6 +59,26 @@ class PipelineOutcome:
     result: ApproachResult = field(
         default_factory=lambda: ApproachResult(approach=NAME)
     )
+
+
+def _save_stage3_graph(
+    sub_nodes: list[dict[str, Any]],
+    sub_edges: list[dict[str, Any]],
+    inputs: ApproachInputs,
+) -> None:
+    out_dir = Path("data/stage3_graphs")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_repo = inputs.repo.replace("/", "_") if inputs.repo else "unknown"
+    sample_id = inputs.sample_id or "nosample"
+    fname = f"{safe_repo}__{sample_id}.json"
+    with (out_dir / fname).open("w", encoding="utf-8") as f:
+        json.dump(
+            {"nodes": sub_nodes, "edges": sub_edges},
+            f,
+            ensure_ascii=False,
+            indent=2,
+            default=str,   # <-- спасает от несериализуемых типов
+        )
 
 
 class AnchorNeighborsPipeline:
@@ -177,6 +200,12 @@ class AnchorNeighborsPipeline:
         )
         stages[StageName.NEIGHBORS] = s3
         if not s3.is_ok() or until == StageName.NEIGHBORS:
+            _save_stage3_graph(
+                s3.payload["sub_nodes"],
+                s3.payload["sub_edges"],
+                inputs,
+            )
+
             return _build_outcome(stages, inputs, node_by_id, edges)
 
         # ---- этап 4 ---------------------------------------------------
