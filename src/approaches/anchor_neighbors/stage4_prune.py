@@ -64,7 +64,6 @@ def _edge_for_llm(edge: dict[str, Any]) -> dict[str, Any]:
 async def prune_subgraph(
     *,
     query: str,
-    anchor: str,
     sub_nodes: list[dict[str, Any]],
     sub_edges: list[dict[str, Any]],
     llm: LLMClient,
@@ -79,9 +78,8 @@ async def prune_subgraph(
     system_prompt = prompt_templates.prune_system()
     user_prompt = prompt_templates.prune_user(
         query=query,
-        anchor=anchor,
-        nodes=[_node_for_llm(n) for n in sub_nodes],
-        edges=[_edge_for_llm(e) for e in sub_edges],
+        nodes=sub_nodes,
+        edges=sub_edges,
     )
 
     if tracer is not None and sample_id:
@@ -136,10 +134,6 @@ async def prune_subgraph(
     }
 
     # Anchor по определению релевантен — гарантируем его наличие.
-    anchor_added = False
-    if anchor not in required and anchor not in useful:
-        required.add(anchor)
-        anchor_added = True
 
     keep = required | useful
     return StageOutcome(
@@ -148,7 +142,6 @@ async def prune_subgraph(
         payload={
             "required": sorted(required),
             "useful": sorted(useful),
-            "anchor_force_added_to_required": anchor_added,
         },
         info=info,
     )

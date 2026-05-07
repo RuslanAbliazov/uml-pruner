@@ -1,8 +1,6 @@
 User Query: "{query}"
 
-Anchor: {anchor}
-
-Anchor-centered subgraph (anchor + all its direct neighbors):
+JSON:
 {subgraph_json}
 
 Task: classify every class above as REQUIRED, USEFUL, or IRRELEVANT to answer the query.

@@ -46,14 +46,12 @@ def prune_system() -> str:
 
 def prune_user(
     query: str,
-    anchor: str,
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
 ) -> str:
     return render_prompt(
         _PROMPTS_DIR / "prune_user.txt",
         query=query,
-        anchor=anchor,
         subgraph_json=json.dumps(
             {"nodes": nodes, "edges": edges}, ensure_ascii=False
         ),

@@ -211,7 +211,6 @@ class AnchorNeighborsPipeline:
         # ---- этап 4 ---------------------------------------------------
         s4 = await stage4_prune.prune_subgraph(
             query=inputs.query,
-            anchors=anchors,
             sub_nodes=s3.payload["sub_nodes"],
             sub_edges=s3.payload["sub_edges"],
             llm=self._llm,

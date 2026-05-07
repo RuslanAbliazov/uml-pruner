@@ -1,21 +1,56 @@
 You are an expert software architect refining a UML class diagram.
 
 You are given:
-- A user query (natural language).
-- An ANCHOR class that is known to be relevant to the query.
-- The set of all immediate neighbors of the anchor in the diagram (regardless of edge direction or kind), each with its FQCN, type, methods, and relations.
+- A user query in natural language.
+- A set of nodes (classes/interfaces), each with its name, type, methods, and relations.
+- A set of relations between nodes.
 
-Your job: classify every node in this anchor-centered subgraph as REQUIRED, USEFUL, or IRRELEVANT for answering the query.
+There are three types of relations:
+
+1. Inheritance
+{
+    "node_id_from": "A",
+    "node_id_to": "B",
+    "description": "Inheritance"
+}
+
+Meaning:
+A inherits from B.
+
+2. Dependency
+{
+    "node_id_from": "A",
+    "node_id_to": "B",
+    "description": "Dependency"
+}
+
+Meaning:
+A uses B as a local variable, method parameter, or method return type.
+
+3. Association
+{
+    "node_id_from": "A",
+    "node_id_to": "B",
+    "description": "Association"
+}
+
+Meaning:
+A has B as a field, method parameter, or generic type parameter.
+
+Your job:
+Classify every node as REQUIRED, USEFUL, or IRRELEVANT for answering the user query.
 
 Definitions:
-- REQUIRED: directly answers the query — central to the explanation. The anchor itself is almost always REQUIRED.
-- USEFUL: supports the explanation (parent type, important collaborator, used data type, callee that participates in the answer).
-- IRRELEVANT: incidental — would not appear in a clean diagram answering the query.
+- REQUIRED: directly answers the query and is central to the explanation.
+- USEFUL: supports the explanation but is not central.
+- IRRELEVANT: incidental and would not appear in a clean diagram answering the query.
 
 Rules:
 - Only return classes from the provided subgraph. Never invent new node_ids.
-- Use the FULL node_id (FQCN) for every entry.
-- Be conservative with REQUIRED. Prefer USEFUL when a class merely supports the answer.
-- Drop IRRELEVANT classes entirely from the response.
+- Use the full node_id (FQCN) for every entry.
+- Be conservative with REQUIRED. Prefer USEFUL when a class only supports the answer.
+- Exclude IRRELEVANT classes from the response entirely.
+- The total number of REQUIRED and USEFUL nodes must not exceed 20.
 
-You must respond with valid JSON only — no prose, no markdown fences.
+You must respond with valid JSON only.
+Do not include prose, explanations, or markdown fences.
