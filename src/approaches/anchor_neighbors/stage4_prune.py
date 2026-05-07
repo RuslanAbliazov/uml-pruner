@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import time
+import traceback
 from typing import Any
 
 from src.approaches.anchor_neighbors import prompt_templates
@@ -89,12 +90,25 @@ async def prune_subgraph(
     try:
         resp = await llm.call(system_prompt, user_prompt, json_mode=True)
     except Exception as e:  # noqa: BLE001 — общая точка обработки внешних сбоев
+        # Получаем полный traceback для детальной диагностики
+        tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        error_msg = (
+            f"[stage4_prune] LLM call failed for sample '{sample_id}'\n"
+            f"Error type: {type(e).__name__}\n"
+            f"Error message: {str(e)}\n"
+            f"Traceback:\n{tb_str}"
+        )
         if tracer is not None and sample_id:
-            tracer.record_error(StageName.PRUNE, sample_id, repr(e))
+            tracer.record_error(StageName.PRUNE, sample_id, error_msg)
         return StageOutcome(
             stage=StageName.PRUNE,
             aborted="llm_call_failed",
-            info={"error": repr(e), "elapsed_s": round(time.time() - started, 2)},
+            info={
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "traceback": tb_str,
+                "elapsed_s": round(time.time() - started, 2),
+            },
         )
 
     if tracer is not None and sample_id:
@@ -109,11 +123,21 @@ async def prune_subgraph(
 
     try:
         data = parse_json_response(resp.content)
-    except ValueError:
+    except ValueError as e:
+        error_msg = (
+            f"[stage4_prune] JSON parsing failed for sample '{sample_id}'\n"
+            f"Error: {str(e)}\n"
+            f"Response excerpt: {resp.content[:200]}"
+        )
         return StageOutcome(
             stage=StageName.PRUNE,
             aborted="bad_json",
-            info={**info, "raw_excerpt": resp.content[:200]},
+            info={
+                **info,
+                "error": str(e),
+                "raw_excerpt": resp.content[:200],
+                "full_response": resp.content,
+            },
         )
     if not isinstance(data, dict):
         return StageOutcome(
@@ -132,6 +156,11 @@ async def prune_subgraph(
         x for x in (data.get("useful") or [])
         if isinstance(x, str) and x in valid_ids and x not in required
     }
+
+    # Сохраняем reasoning если есть (для диагностики)
+    reasoning = data.get("reasoning", "")
+    if reasoning:
+        info["reasoning"] = reasoning
 
     # Anchor по определению релевантен — гарантируем его наличие.
 

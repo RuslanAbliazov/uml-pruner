@@ -43,6 +43,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from tqdm import tqdm
+
 # Сделать корень проекта импортируемым, когда этот скрипт запускают как файл.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
@@ -158,6 +160,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Не считать метрики (нужно только для прогона без эталона).",
     )
+    p.add_argument(
+        "--from-stage3",
+        type=Path,
+        default=None,
+        help="Путь к директории с сохраненными данными stage3 (data/stage3_prompts). "
+             "Если указан, пропускает этапы 1-3 и сразу запускает этап 4 (prune).",
+    )
     return p.parse_args()
 
 
@@ -188,6 +197,137 @@ async def _process_one(
     return await pipeline.run_with_stages(inputs, until=until)
 
 
+async def _run_from_stage3(
+    args: argparse.Namespace,
+    pipeline: AnchorNeighborsPipeline,
+    settings,
+) -> int:
+    """Запустить только этап 4 из сохраненных данных stage3."""
+    from src.approaches.anchor_neighbors.settings import AnchorNeighborsSettings
+    
+    stage3_dir = args.from_stage3
+    if not stage3_dir.exists():
+        print(f"[error] Директория {stage3_dir} не существует.", file=sys.stderr)
+        return 2
+    
+    # Собираем все JSON файлы из директории stage3
+    stage3_files = sorted(stage3_dir.glob("*.json"))
+    if not stage3_files:
+        print(f"[error] В директории {stage3_dir} нет JSON файлов.", file=sys.stderr)
+        return 2
+    
+    # Применяем фильтр --limit если указан
+    if args.limit and args.limit > 0:
+        stage3_files = stage3_files[:args.limit]
+    
+    # Подготовка путей вывода
+    out_dir: Path = settings.pipeline.outputs_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    samples_dir = out_dir / "samples"
+    samples_dir.mkdir(exist_ok=True)
+    report_path = out_dir / "report.jsonl"
+    aggregate_path = out_dir / "aggregate.json"
+    
+    sample_reports: list[SampleReport] = []
+    runtime_errors: list[dict] = []
+    
+    # Загружаем эталон если нужен
+    gold_index = None
+    missing_gold: list[tuple[str, str]] = []
+    if not args.no_eval:
+        gold_index = GoldTruthIndex.from_csv(args.gold)
+    
+    started = time.time()
+    with JsonlReportWriter(report_path) as report:
+        for idx, stage3_file in tqdm(
+            enumerate(stage3_files),
+            total=len(stage3_files),
+            desc="Processing from stage3",
+            unit="sample",
+        ):
+            try:
+                # Загружаем сохраненные данные stage3
+                with stage3_file.open("r", encoding="utf-8") as f:
+                    stage3_data = json.load(f)
+                
+                query = stage3_data["query"]
+                sub_nodes = stage3_data["sub_nodes"]
+                sub_edges = stage3_data["sub_edges"]
+                sample_id = stage3_data.get("sample_id", f"sample_{idx:04d}")
+                repo = stage3_data.get("repo", "")
+                
+                # Запускаем только этап 4
+                outcome = await pipeline.run_stage4_only(
+                    query=query,
+                    sub_nodes=sub_nodes,
+                    sub_edges=sub_edges,
+                    sample_id=sample_id,
+                )
+                
+            except Exception as e:  # noqa: BLE001
+                import traceback as tb
+                tb_str = "".join(tb.format_exception(type(e), e, e.__traceback__))
+                runtime_errors.append({
+                    "index": idx,
+                    "file": str(stage3_file),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "traceback": tb_str,
+                })
+                print(
+                    f"[error] Failed to process {stage3_file.name}:\n"
+                    f"{type(e).__name__}: {str(e)}",
+                    file=sys.stderr,
+                )
+                continue
+            
+            # Сохраняем результат
+            save_json(
+                outcome.result.to_diagram(),
+                samples_dir / f"{sample_id}.json",
+            )
+            
+            # Метрики
+            if gold_index is not None:
+                gold = gold_index.lookup(repo, query)
+                if gold is None:
+                    missing_gold.append((repo, query))
+                    continue
+                rep = build_sample_report(
+                    sample_id=sample_id,
+                    repo=repo,
+                    query=query,
+                    stages=outcome.stages,
+                    gold=gold,
+                )
+                sample_reports.append(rep)
+                report.write(rep)
+    
+    elapsed = time.time() - started
+    
+    # Агрегация метрик
+    if sample_reports:
+        agg = aggregate(sample_reports)
+        agg["until"] = "prune"
+        agg["from_stage3"] = True
+        agg["elapsed_s"] = round(elapsed, 2)
+        save_json(agg, aggregate_path)
+        print(json.dumps(agg, ensure_ascii=False, indent=2))
+    
+    print(
+        f"\nready: files={len(stage3_files)} processed={len(sample_reports)} "
+        f"errors={len(runtime_errors)} missing_gold={len(missing_gold)} "
+        f"elapsed={elapsed:.1f}s",
+        file=sys.stderr,
+    )
+    if runtime_errors:
+        save_json(runtime_errors, out_dir / "errors.json")
+    if missing_gold:
+        save_json(missing_gold, out_dir / "missing_gold.json")
+    
+    return 0
+
+
 def _filter_samples(
     samples: list[SlimSample], repo: str, query: str, limit: int
 ) -> list[SlimSample]:
@@ -206,6 +346,10 @@ async def _run_async(args: argparse.Namespace) -> int:
     cfg = load_config(str(args.config))
     settings = load_settings(cfg)
     pipeline = build_runner(cfg)
+
+    # Режим запуска только stage4 из сохраненных данных
+    if args.from_stage3:
+        return await _run_from_stage3(args, pipeline, settings)
 
     # 1. Что подаём в пайплайн.
     samples = _filter_samples(
@@ -245,7 +389,12 @@ async def _run_async(args: argparse.Namespace) -> int:
 
     started = time.time()
     with JsonlReportWriter(report_path) as report:
-        for idx, sample in enumerate(samples):
+        for idx, sample in tqdm(
+            enumerate(samples),
+            total=len(samples),
+            desc="Processing samples",
+            unit="sample",
+        ):
             try:
                 outcome = await _process_one(
                     pipeline, sample, args.diagrams_dir,

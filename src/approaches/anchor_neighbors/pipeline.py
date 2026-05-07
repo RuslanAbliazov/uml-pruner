@@ -81,6 +81,34 @@ def _save_stage3_graph(
         )
 
 
+def _save_stage3_prompt_data(
+    query: str,
+    sub_nodes: list[dict[str, Any]],
+    sub_edges: list[dict[str, Any]],
+    inputs: ApproachInputs,
+) -> None:
+    """Сохранить данные для промпта этапа 4, чтобы можно было пропустить этапы 1-3."""
+    out_dir = Path("data/stage3_prompts")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_repo = inputs.repo.replace("/", "_") if inputs.repo else "unknown"
+    sample_id = inputs.sample_id or "nosample"
+    fname = f"{safe_repo}__{sample_id}.json"
+    with (out_dir / fname).open("w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "query": query,
+                "sub_nodes": sub_nodes,
+                "sub_edges": sub_edges,
+                "sample_id": inputs.sample_id,
+                "repo": inputs.repo,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+
+
 class AnchorNeighborsPipeline:
     """Реализация подхода #2 в виде явного 4-этапного пайплайна."""
 
@@ -199,6 +227,16 @@ class AnchorNeighborsPipeline:
             cap=self._settings.pipeline.max_subgraph_nodes,
         )
         stages[StageName.NEIGHBORS] = s3
+        
+        # Сохраняем данные для этапа 4 (промпт), чтобы можно было пропустить этапы 1-3
+        if s3.is_ok():
+            _save_stage3_prompt_data(
+                query=inputs.query,
+                sub_nodes=s3.payload["sub_nodes"],
+                sub_edges=s3.payload["sub_edges"],
+                inputs=inputs,
+            )
+        
         if not s3.is_ok() or until == StageName.NEIGHBORS:
             _save_stage3_graph(
                 s3.payload["sub_nodes"],
@@ -230,6 +268,44 @@ class AnchorNeighborsPipeline:
     async def aclose(self) -> None:
         """Долгоживущих ресурсов нет; метод нужен только из-за протокола."""
         return None
+
+    async def run_stage4_only(
+        self,
+        query: str,
+        sub_nodes: list[dict[str, Any]],
+        sub_edges: list[dict[str, Any]],
+        sample_id: str = "",
+    ) -> PipelineOutcome:
+        """Запустить только этап 4 (prune) на готовых данных из stage3.
+        
+        Используется когда данные stage3 были сохранены ранее и нужно
+        только выполнить LLM-прунинг без повторного выполнения этапов 1-3.
+        """
+        stages: dict[StageName, StageOutcome] = {}
+        
+        # Выполняем только этап 4
+        s4 = await stage4_prune.prune_subgraph(
+            query=query,
+            sub_nodes=sub_nodes,
+            sub_edges=sub_edges,
+            llm=self._llm,
+            tracer=self._tracer,
+            sample_id=sample_id,
+        )
+        stages[StageName.PRUNE] = s4
+        
+        # Строим node_by_id из sub_nodes для _build_outcome
+        node_by_id = {n["node_id"]: n for n in sub_nodes if n.get("node_id")}
+        
+        # Создаем минимальный ApproachInputs для _build_outcome
+        inputs = ApproachInputs(
+            query=query,
+            diagram={"nodes": sub_nodes, "edges": sub_edges},
+            sample_id=sample_id,
+            repo="",  # Repo неизвестен при загрузке из stage3
+        )
+        
+        return _build_outcome(stages, inputs, node_by_id, sub_edges)
 
 
 # ---- сборка финального ApproachResult из последнего успешного этапа ----
