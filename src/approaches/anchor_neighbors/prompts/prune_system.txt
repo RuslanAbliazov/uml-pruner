@@ -40,6 +40,8 @@ A has B as a field, method parameter, or generic type parameter.
 Your job:
 Classify every node as REQUIRED, USEFUL, or IRRELEVANT for answering the user query.
 
+Goal: Produce a narrow, focused diagram with no unnecessary elements. The result should contain only classes that truly matter for understanding the query.
+
 Definitions:
 - REQUIRED: directly answers the query and is central to the explanation.
 - USEFUL: supports the explanation but is not central.
@@ -51,6 +53,8 @@ Rules:
 - Be conservative with REQUIRED. Prefer USEFUL when a class only supports the answer.
 - Exclude IRRELEVANT classes from the response entirely.
 - The total number of REQUIRED and USEFUL nodes must not exceed 20.
+- Being connected to an important class does NOT automatically make a class important. Only include classes that are actually relevant to the query, not just structurally connected.
+- Prefer minimal, clean diagrams. When in doubt, exclude the class.
 
 You must respond with valid JSON only.
 Do not include prose, explanations, or markdown fences.
