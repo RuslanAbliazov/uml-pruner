@@ -166,15 +166,17 @@ async def prune_subgraph(
 ) -> StageOutcome:
     """Прогнать multi-step LLM-прунинг и вернуть структурированный StageOutcome.
     
+    Общая логика без привязки к конкретным полям:
+    - Каждый шаг возвращает произвольный JSON
+    - Весь JSON автоматически попадает в context для следующего шага
+    - Только ПОСЛЕДНИЙ шаг должен вернуть required/useful (это контракт stage 4)
+    - Все промежуточные поля определяются промптами, не кодом
+    
     Args:
         prune_steps: список имён шагов (например, ["identify_core", "classify_neighbors"]).
                      Если None или ["single"], выполняется одношаговый прунинг.
         tracer: записывает request/response для каждого шага.
         sample_id: идентификатор сэмпла для логирования.
-    
-    Каждый шаг получает контекст от предыдущих шагов:
-    - Шаг 1 видит только query и subgraph
-    - Шаг 2+ видит результаты предыдущих шагов в context
     """
     if prune_steps is None or prune_steps == ["single"]:
         prune_steps = ["single"]
@@ -182,14 +184,13 @@ async def prune_subgraph(
     started_total = time.time()
     valid_ids = {n["node_id"] for n in sub_nodes if n.get("node_id")}
     
-    # Контекст, передаваемый между шагами
+    # Контекст, передаваемый между шагами - накапливаем ВСЕ результаты
     context: dict[str, Any] = {}
     # Метаданные всех шагов
     steps_info: list[dict[str, Any]] = []
     
-    # Финальные результаты (заполняются последним шагом)
-    required: set[str] = set()
-    useful: set[str] = set()
+    # Результат последнего шага
+    last_step_data: dict[str, Any] | None = None
     
     # Выполняем шаги последовательно
     for step_idx, step_name in enumerate(prune_steps):
@@ -205,6 +206,8 @@ async def prune_subgraph(
             sample_id=sample_id,
         )
         
+        # Сохраняем ВЕСЬ response в метаданные (для диагностики)
+        step_info["response_data"] = data if data is not None else None
         steps_info.append(step_info)
         
         # Если ошибка — прерываем
@@ -221,34 +224,37 @@ async def prune_subgraph(
                 },
             )
         
-        # Сохраняем reasoning если есть
-        reasoning = data.get("reasoning", "")
-        if reasoning:
-            step_info["reasoning"] = reasoning
-            context[f"step{step_idx + 1}_reasoning"] = reasoning
+        # ОБЩАЯ ЛОГИКА: весь JSON response идёт в context для следующих шагов
+        # Никаких проверок на конкретные поля!
+        for key, value in data.items():
+            context[key] = value
         
-        # Обрабатываем результат в зависимости от типа шага
-        # Для шага "identify_core" или похожих — сохраняем core_classes
-        if "core_classes" in data:
-            core = [
-                x for x in (data.get("core_classes") or [])
-                if isinstance(x, str) and x in valid_ids
-            ]
-            context["core_classes"] = core
-            step_info["core_classes_count"] = len(core)
-        
-        # Для финального шага (или единственного) — извлекаем required/useful
-        if "required" in data or "useful" in data:
-            required = {
-                x for x in (data.get("required") or [])
-                if isinstance(x, str) and x in valid_ids
-            }
-            useful = {
-                x for x in (data.get("useful") or [])
-                if isinstance(x, str) and x in valid_ids and x not in required
-            }
-            step_info["required_count"] = len(required)
-            step_info["useful_count"] = len(useful)
+        # Запоминаем результат последнего шага
+        last_step_data = data
+    
+    # КОНТРАКТ: последний шаг ОБЯЗАН вернуть required/useful
+    if last_step_data is None:
+        return StageOutcome(
+            stage=StageName.PRUNE,
+            aborted="no_steps_executed",
+            info={
+                "subgraph_input_size": len(sub_nodes),
+                "total_steps": len(prune_steps),
+                "steps": steps_info,
+                "elapsed_total_s": round(time.time() - started_total, 2),
+            },
+        )
+    
+    # Извлекаем required/useful из последнего шага
+    # Только эти поля обязательны - всё остальное определяется промптами
+    required = {
+        x for x in (last_step_data.get("required") or [])
+        if isinstance(x, str) and x in valid_ids
+    }
+    useful = {
+        x for x in (last_step_data.get("useful") or [])
+        if isinstance(x, str) and x in valid_ids and x not in required
+    }
     
     # Итоговая информация
     info = {
