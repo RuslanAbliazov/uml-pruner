@@ -56,3 +56,60 @@ def prune_user(
             {"nodes": nodes, "edges": edges}, ensure_ascii=False
         ),
     )
+
+
+def prune_step_system(step_name: str) -> str:
+    """Загрузить system промпт для конкретного шага прунинга.
+    
+    Для шага "single" использует prune_system.txt (обратная совместимость).
+    Для других шагов ищет prune_{step_name}_system.txt.
+    """
+    if step_name == "single":
+        return load_prompt(_PROMPTS_DIR / "prune_system.txt")
+    return load_prompt(_PROMPTS_DIR / f"prune_{step_name}_system.txt")
+
+
+def prune_step_user(
+    step_name: str,
+    query: str,
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    context: dict[str, Any] | None = None,
+) -> str:
+    """Сгенерировать user промпт для конкретного шага прунинга.
+    
+    Для шага "single" использует prune_user.txt (обратная совместимость).
+    Для других шагов ищет prune_{step_name}_user.txt и передает в него:
+    - query
+    - subgraph_json
+    - context (результаты предыдущих шагов)
+    """
+    subgraph_json = json.dumps(
+        {"nodes": nodes, "edges": edges}, ensure_ascii=False
+    )
+    
+    if step_name == "single":
+        return render_prompt(
+            _PROMPTS_DIR / "prune_user.txt",
+            query=query,
+            subgraph_json=subgraph_json,
+        )
+    
+    # Подготовим переменные для шаблона
+    template_vars = {
+        "query": query,
+        "subgraph_json": subgraph_json,
+    }
+    
+    # Добавим context, если есть
+    if context:
+        for key, value in context.items():
+            if isinstance(value, (list, dict)):
+                template_vars[key] = json.dumps(value, ensure_ascii=False, indent=2)
+            else:
+                template_vars[key] = str(value)
+    
+    return render_prompt(
+        _PROMPTS_DIR / f"prune_{step_name}_user.txt",
+        **template_vars,
+    )

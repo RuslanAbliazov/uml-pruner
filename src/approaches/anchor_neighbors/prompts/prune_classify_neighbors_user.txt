@@ -1,0 +1,23 @@
+User Query: "{query}"
+
+Previously identified CORE classes (from step 1):
+{core_classes}
+
+Full subgraph JSON:
+{subgraph_json}
+
+Task: Classify ALL classes as REQUIRED, USEFUL, or IRRELEVANT.
+
+Consider:
+1. The core classes are your anchor points - they directly answer the query.
+2. Which neighbors of these core classes are truly necessary to understand the query?
+3. Which classes merely exist in the graph but add no insight?
+
+Remember: Being structurally connected to a core class is NOT sufficient. Only include classes that add real understanding.
+
+Return JSON in exactly this shape (use full node_ids; omit IRRELEVANT classes entirely):
+{{
+  "reasoning": "Brief explanation of your classification logic",
+  "required": ["full.node.id.1", ...],
+  "useful": ["full.node.id.2", ...]
+}}

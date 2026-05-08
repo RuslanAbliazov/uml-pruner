@@ -62,7 +62,216 @@ def _edge_for_llm(edge: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _execute_single_prune_step(
+    *,
+    step_name: str,
+    step_index: int,
+    query: str,
+    sub_nodes: list[dict[str, Any]],
+    sub_edges: list[dict[str, Any]],
+    context: dict[str, Any],
+    llm: LLMClient,
+    tracer: LLMTracer | None,
+    sample_id: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Выполнить один шаг multi-step прунинга.
+    
+    Возвращает:
+    - data: результат парсинга JSON (или None при ошибке)
+    - info: метаданные вызова (timing, tokens, errors)
+    """
+    system_prompt = prompt_templates.prune_step_system(step_name)
+    user_prompt = prompt_templates.prune_step_user(
+        step_name=step_name,
+        query=query,
+        nodes=sub_nodes,
+        edges=sub_edges,
+        context=context,
+    )
+    
+    stage_name_for_tracer = f"{StageName.PRUNE.value}_step{step_index + 1}_{step_name}"
+    
+    if tracer is not None and sample_id:
+        tracer.record_request(StageName.PRUNE, f"{sample_id}_{stage_name_for_tracer}", 
+                             system_prompt, user_prompt)
+    
+    started = time.time()
+    try:
+        resp = await llm.call(system_prompt, user_prompt, json_mode=True)
+    except Exception as e:  # noqa: BLE001
+        tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        error_msg = (
+            f"[stage4_prune, step {step_index + 1}: {step_name}] "
+            f"LLM call failed for sample '{sample_id}'\n"
+            f"Error type: {type(e).__name__}\n"
+            f"Error message: {str(e)}\n"
+            f"Traceback:\n{tb_str}"
+        )
+        if tracer is not None and sample_id:
+            tracer.record_error(StageName.PRUNE, f"{sample_id}_{stage_name_for_tracer}", 
+                              error_msg)
+        info = {
+            "step": step_index + 1,
+            "step_name": step_name,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "traceback": tb_str,
+            "elapsed_s": round(time.time() - started, 2),
+        }
+        return None, info
+    
+    if tracer is not None and sample_id:
+        tracer.record_response(StageName.PRUNE, f"{sample_id}_{stage_name_for_tracer}", 
+                              resp.content)
+    
+    info = {
+        "step": step_index + 1,
+        "step_name": step_name,
+        "elapsed_s": round(time.time() - started, 2),
+        "input_tokens": resp.input_tokens,
+        "output_tokens": resp.output_tokens,
+    }
+    
+    try:
+        data = parse_json_response(resp.content)
+    except ValueError as e:
+        error_msg = (
+            f"[stage4_prune, step {step_index + 1}: {step_name}] "
+            f"JSON parsing failed for sample '{sample_id}'\n"
+            f"Error: {str(e)}\n"
+            f"Response excerpt: {resp.content[:200]}"
+        )
+        info["error"] = str(e)
+        info["raw_excerpt"] = resp.content[:200]
+        info["full_response"] = resp.content
+        return None, info
+    
+    if not isinstance(data, dict):
+        info["error"] = "Response is not a JSON object"
+        info["raw_excerpt"] = resp.content[:200]
+        return None, info
+    
+    return data, info
+
+
 async def prune_subgraph(
+    *,
+    query: str,
+    sub_nodes: list[dict[str, Any]],
+    sub_edges: list[dict[str, Any]],
+    llm: LLMClient,
+    prune_steps: list[str] = None,
+    tracer: LLMTracer | None = None,
+    sample_id: str = "",
+) -> StageOutcome:
+    """Прогнать multi-step LLM-прунинг и вернуть структурированный StageOutcome.
+    
+    Args:
+        prune_steps: список имён шагов (например, ["identify_core", "classify_neighbors"]).
+                     Если None или ["single"], выполняется одношаговый прунинг.
+        tracer: записывает request/response для каждого шага.
+        sample_id: идентификатор сэмпла для логирования.
+    
+    Каждый шаг получает контекст от предыдущих шагов:
+    - Шаг 1 видит только query и subgraph
+    - Шаг 2+ видит результаты предыдущих шагов в context
+    """
+    if prune_steps is None or prune_steps == ["single"]:
+        prune_steps = ["single"]
+    
+    started_total = time.time()
+    valid_ids = {n["node_id"] for n in sub_nodes if n.get("node_id")}
+    
+    # Контекст, передаваемый между шагами
+    context: dict[str, Any] = {}
+    # Метаданные всех шагов
+    steps_info: list[dict[str, Any]] = []
+    
+    # Финальные результаты (заполняются последним шагом)
+    required: set[str] = set()
+    useful: set[str] = set()
+    
+    # Выполняем шаги последовательно
+    for step_idx, step_name in enumerate(prune_steps):
+        data, step_info = await _execute_single_prune_step(
+            step_name=step_name,
+            step_index=step_idx,
+            query=query,
+            sub_nodes=sub_nodes,
+            sub_edges=sub_edges,
+            context=context,
+            llm=llm,
+            tracer=tracer,
+            sample_id=sample_id,
+        )
+        
+        steps_info.append(step_info)
+        
+        # Если ошибка — прерываем
+        if data is None:
+            return StageOutcome(
+                stage=StageName.PRUNE,
+                aborted=f"step{step_idx + 1}_failed",
+                info={
+                    "subgraph_input_size": len(sub_nodes),
+                    "total_steps": len(prune_steps),
+                    "failed_at_step": step_idx + 1,
+                    "steps": steps_info,
+                    "elapsed_total_s": round(time.time() - started_total, 2),
+                },
+            )
+        
+        # Сохраняем reasoning если есть
+        reasoning = data.get("reasoning", "")
+        if reasoning:
+            step_info["reasoning"] = reasoning
+            context[f"step{step_idx + 1}_reasoning"] = reasoning
+        
+        # Обрабатываем результат в зависимости от типа шага
+        # Для шага "identify_core" или похожих — сохраняем core_classes
+        if "core_classes" in data:
+            core = [
+                x for x in (data.get("core_classes") or [])
+                if isinstance(x, str) and x in valid_ids
+            ]
+            context["core_classes"] = core
+            step_info["core_classes_count"] = len(core)
+        
+        # Для финального шага (или единственного) — извлекаем required/useful
+        if "required" in data or "useful" in data:
+            required = {
+                x for x in (data.get("required") or [])
+                if isinstance(x, str) and x in valid_ids
+            }
+            useful = {
+                x for x in (data.get("useful") or [])
+                if isinstance(x, str) and x in valid_ids and x not in required
+            }
+            step_info["required_count"] = len(required)
+            step_info["useful_count"] = len(useful)
+    
+    # Итоговая информация
+    info = {
+        "subgraph_input_size": len(sub_nodes),
+        "total_steps": len(prune_steps),
+        "steps": steps_info,
+        "elapsed_total_s": round(time.time() - started_total, 2),
+    }
+    
+    keep = required | useful
+    return StageOutcome(
+        stage=StageName.PRUNE,
+        node_ids=sorted(keep),
+        payload={
+            "required": sorted(required),
+            "useful": sorted(useful),
+        },
+        info=info,
+    )
+
+
+# Обратная совместимость: старая функция для одношагового прунинга
+async def prune_subgraph_legacy(
     *,
     query: str,
     sub_nodes: list[dict[str, Any]],
@@ -71,10 +280,10 @@ async def prune_subgraph(
     tracer: LLMTracer | None = None,
     sample_id: str = "",
 ) -> StageOutcome:
-    """Прогнать LLM-прунинг и вернуть структурированный StageOutcome.
-
-    Если передан `tracer` и `sample_id` — пишем последний request/response
-    в `<root>/prune/<sample_id>.{req,resp}.txt` (перезаписывая прошлый).
+    """Legacy версия для обратной совместимости.
+    
+    Использует оригинальные промпты prune_system.txt / prune_user.txt.
+    Новый код должен использовать prune_subgraph() с prune_steps.
     """
     system_prompt = prompt_templates.prune_system()
     user_prompt = prompt_templates.prune_user(

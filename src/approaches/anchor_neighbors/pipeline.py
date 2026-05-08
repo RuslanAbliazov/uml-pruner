@@ -252,6 +252,7 @@ class AnchorNeighborsPipeline:
             sub_nodes=s3.payload["sub_nodes"],
             sub_edges=s3.payload["sub_edges"],
             llm=self._llm,
+            prune_steps=self._settings.pipeline.prune_steps,
             tracer=self._tracer,
             sample_id=inputs.sample_id,
         )
@@ -289,6 +290,7 @@ class AnchorNeighborsPipeline:
             sub_nodes=sub_nodes,
             sub_edges=sub_edges,
             llm=self._llm,
+            prune_steps=self._settings.pipeline.prune_steps,
             tracer=self._tracer,
             sample_id=sample_id,
         )
