@@ -1,17 +1,15 @@
 User Query: "{query}"
 
-JSON:
+Subgraph JSON:
 {subgraph_json}
 
-Task: Identify the CORE classes that DIRECTLY answer the query.
+Task:
+Identify the classes most likely to be central for answering the query. Prioritise recall over precision.
 
-Think step by step:
-1. What is the main subject of the query?
-2. Which classes are absolutely essential to that subject?
-3. Which classes would you MUST include to explain the query to someone?
-
-Return JSON in exactly this shape (use full node_ids):
+Return exactly this JSON:
 {{
-  "reasoning": "Brief explanation of why these classes are core",
-  "core_classes": ["full.node.id.1", "full.node.id.2", ...]
+  "anchor_classes": [
+    "full.node.id.1",
+    "full.node.id.2"
+  ]
 }}

@@ -1,20 +1,13 @@
 User Query: "{query}"
 
-JSON:
+Subgraph JSON:
 {subgraph_json}
 
-Task: classify every class above as REQUIRED, USEFUL, or IRRELEVANT to answer the query.
+Task:
+Classify each class in the subgraph as REQUIRED, USEFUL, or IRRELEVANT according to the rules in the system prompt.
 
-First, think through your reasoning:
-1. Which classes directly answer the query?
-2. Which classes provide essential supporting context?
-3. Which classes are merely connected but don't add value to understanding the query?
-
-Remember: aim for a minimal, focused diagram. A class being structurally connected to an important class is NOT sufficient reason to include it.
-
-Return JSON in exactly this shape (use full node_ids; omit IRRELEVANT classes entirely):
+Return exactly this JSON shape:
 {{
-  "reasoning": "Brief explanation of your classification logic",
-  "required": ["full.node.id.1", ...],
-  "useful": ["full.node.id.2", ...]
+  "required": ["full.node.id.1", "full.node.id.2"],
+  "useful": ["full.node.id.3", "full.node.id.4"]
 }}
