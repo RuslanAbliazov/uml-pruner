@@ -57,8 +57,14 @@ jobs:
       - name: Unit tests
         run: pytest tests/unit -v
 
+      # We deliberately scope this to test_baselines_smoke.py rather than
+      # `pytest tests/integration -v`. The existing test_pipeline_mock.py:
+      #   * defines async def test_* (needs pytest-asyncio / pytest-anyio),
+      #   * loads uml_with_methods/disruptor.json (gitignored, not in CI).
+      # Adding either dependency to CI is a separate decision the student can
+      # take later — for the patch's contract we keep CI small and fast.
       - name: Integration smoke (baselines on tiny fixture)
-        run: pytest tests/integration -v
+        run: pytest tests/integration/test_baselines_smoke.py -v
 
       # Smoke-run the IAA CLI on the tiny annotations fixture. This catches
       # regressions in the script's argparse / output paths.
