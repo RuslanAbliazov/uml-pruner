@@ -95,6 +95,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="If set, write the full report (per-sample + summary) as JSON.",
     )
+    p.add_argument(
+        "--binary",
+        action="store_true",
+        default=False,
+        help="Merge required and useful into a single positive class "
+        "(required_or_useful) and treat vs. irrelevant.",
+    )
     return p.parse_args()
 
 
@@ -118,6 +125,7 @@ def main() -> None:
         rows,
         policy=args.policy,
         min_annotators=args.min_annotators,
+        merge_required_useful=args.binary,
     )
     print(format_summary(report))
 

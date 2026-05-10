@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Iterable, Literal
 
 LABELS = ("required", "useful", "irrelevant")
+BINARY_LABELS = ("required_or_useful", "irrelevant")
 Label = str  # one of LABELS
 
 UniversePolicy = Literal["union_with_implicit_irrelevant", "intersection"]
@@ -136,10 +137,18 @@ def group_by_sample(
 # ----------------------------------------------------------------------------
 
 
+def _label_to_binary(label: str) -> str:
+    """Merge required/useful into a single positive class."""
+    if label in ("required", "useful"):
+        return "required_or_useful"
+    return label
+
+
 def _aligned_labels(
     a: RawAnnotation,
     b: RawAnnotation,
     policy: UniversePolicy,
+    merge_required_useful: bool = False,
 ) -> tuple[list[Label], list[Label]]:
     """Build two parallel label arrays for the two annotators.
 
@@ -149,11 +158,18 @@ def _aligned_labels(
     """
     if policy == "intersection":
         ids = sorted(set(a.labels) & set(b.labels))
-        return [a.labels[i] for i in ids], [b.labels[i] for i in ids]
-    # default: union with implicit irrelevant
-    ids = sorted(set(a.labels) | set(b.labels))
-    la = [a.labels.get(i, "irrelevant") for i in ids]
-    lb = [b.labels.get(i, "irrelevant") for i in ids]
+        la = [a.labels[i] for i in ids]
+        lb = [b.labels[i] for i in ids]
+    else:
+        # default: union with implicit irrelevant
+        ids = sorted(set(a.labels) | set(b.labels))
+        la = [a.labels.get(i, "irrelevant") for i in ids]
+        lb = [b.labels.get(i, "irrelevant") for i in ids]
+
+    if merge_required_useful:
+        la = [_label_to_binary(l) for l in la]
+        lb = [_label_to_binary(l) for l in lb]
+
     return la, lb
 
 
@@ -207,6 +223,7 @@ def fleiss_kappa(
     *,
     policy: UniversePolicy = "union_with_implicit_irrelevant",
     labels: tuple[str, ...] = LABELS,
+    merge_required_useful: bool = False,
 ) -> float:
     """Fleiss' κ across N ≥ 2 annotators on the same sample.
 
@@ -220,6 +237,20 @@ def fleiss_kappa(
     n_raters = len(annotations)
     if n_raters < 2:
         return float("nan")
+
+    if merge_required_useful:
+        annotations = [
+            RawAnnotation(
+                sample_id=a.sample_id,
+                annotator=a.annotator,
+                status=a.status,
+                labels={
+                    nid: _label_to_binary(lab) for nid, lab in a.labels.items()
+                },
+            )
+            for a in annotations
+        ]
+        labels = BINARY_LABELS
 
     if policy == "intersection":
         ids = set(annotations[0].labels)
@@ -337,6 +368,7 @@ def compute_iaa(
     *,
     policy: UniversePolicy = "union_with_implicit_irrelevant",
     min_annotators: int = 2,
+    merge_required_useful: bool = False,
 ) -> IAAReport:
     """Compute per-sample and summary IAA.
 
@@ -363,18 +395,26 @@ def compute_iaa(
                 universe |= set(a.labels)
 
         pairwise: list[dict[str, Any]] = []
+        active_labels = BINARY_LABELS if merge_required_useful else LABELS
+
         for a, b in combinations(anns_sorted, 2):
-            la, lb = _aligned_labels(a, b, policy)
+            la, lb = _aligned_labels(a, b, policy,
+                                     merge_required_useful=merge_required_useful)
             pairwise.append(
                 {
                     "pair": [a.annotator, b.annotator],
-                    "kappa": cohens_kappa(la, lb),
+                    "kappa": cohens_kappa(la, lb, labels=active_labels),
                     "agreement": percent_agreement(la, lb),
                     "n_compared": len(la),
                 }
             )
 
-        fk = fleiss_kappa(anns_sorted, policy=policy) if len(anns_sorted) >= 2 else float("nan")
+        fk = fleiss_kappa(
+            anns_sorted,
+            policy=policy,
+            labels=active_labels,
+            merge_required_useful=merge_required_useful,
+        ) if len(anns_sorted) >= 2 else float("nan")
 
         per_sample.append(
             SampleIAA(
@@ -399,6 +439,7 @@ def compute_iaa(
         "mean_percent_agreement": _safe_mean(all_agreements),
         "mean_fleiss_kappa": _safe_mean(fleiss_vals),
         "policy": policy,
+        "binary_merge": merge_required_useful,
     }
 
     return IAAReport(per_sample=per_sample, summary=summary)
