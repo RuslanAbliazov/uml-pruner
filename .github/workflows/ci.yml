@@ -1,0 +1,109 @@
+name: CI
+
+# Runs on every push and PR. We only test what doesn't need external models
+# or network: unit tests, baselines, IAA, oracle baselines, and an
+# end-to-end smoke run on the synthetic micro-dataset.
+#
+# What we DON'T run here (and intentionally so):
+#   * scripts/build_index.py — needs torch + sentence-transformers download
+#   * eval_retriever.py / approaches that call real LLMs / reranker
+#   * anything that loads the production diagrams (gigabyte-scale)
+#
+# Those are validated locally by the student before each push.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install core dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Core only: no torch / sentence-transformers (those go via
+          # requirements-embeddings.txt and we deliberately skip them here).
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Show installed versions
+        run: |
+          python -V
+          pip list
+
+      # Sanity import — fail fast if a circular import or syntax error slips in.
+      - name: Sanity-check imports
+        run: |
+          python -c "from src.approaches import list_approaches; print(list_approaches())"
+          python -c "from src.eval.iaa import compute_iaa; print('iaa ok')"
+          python -c "from src.eval.oracle_baselines import ORACLES; print(sorted(ORACLES))"
+
+      - name: Unit tests
+        run: pytest tests/unit -v
+
+      # We deliberately scope this to test_baselines_smoke.py rather than
+      # `pytest tests/integration -v`. The existing test_pipeline_mock.py:
+      #   * defines async def test_* (needs pytest-asyncio / pytest-anyio),
+      #   * loads uml_with_methods/disruptor.json (gitignored, not in CI).
+      # Adding either dependency to CI is a separate decision the student can
+      # take later — for the patch's contract we keep CI small and fast.
+      - name: Integration smoke (baselines on tiny fixture)
+        run: pytest tests/integration/test_baselines_smoke.py -v
+
+      # Smoke-run the IAA CLI on the tiny annotations fixture. This catches
+      # regressions in the script's argparse / output paths.
+      - name: IAA CLI smoke
+        run: |
+          python scripts/iaa.py \
+            --annotations tests/fixtures/tiny/annotations_raw.csv \
+            --output /tmp/iaa.json
+          python -c "import json; d=json.load(open('/tmp/iaa.json')); \
+                     assert d['summary']['n_samples_with_iaa'] >= 1; \
+                     print('iaa cli ok:', d['summary'])"
+
+      # Smoke-run the oracle baseline driver on the tiny fixture. This
+      # exercises the whole script (load dataset → predict → save → evaluate).
+      - name: Oracle baselines CLI smoke
+        run: |
+          mkdir -p /tmp/cixp/results
+          python scripts/run_oracle_baselines.py \
+            --baselines gold_only \
+            --dataset      tests/fixtures/tiny/dataset.csv \
+            --diagrams-dir tests/fixtures/tiny/diagrams_normalized \
+            --output-root  /tmp/cixp/results
+          python -c "import json; \
+                     d=json.load(open('/tmp/cixp/results/oracle_gold_only/evaluation_report.json')); \
+                     assert d['summary']['macro']['mean_recall_overall'] == 1.0, d; \
+                     print('oracle smoke ok')"
+
+      # Ablation across only the cheap baselines, on the tiny fixture.
+      # bm25 is in there because rank_bm25 is a core dependency now.
+      - name: Ablation CLI smoke
+        run: |
+          python scripts/ablation.py \
+            --approaches empty full_diagram random_subset top_degree bm25 \
+            --dataset      tests/fixtures/tiny/dataset.csv \
+            --diagrams-dir tests/fixtures/tiny/diagrams_normalized \
+            --output-root  /tmp/cixp/results \
+            --output       /tmp/cixp/ablation.json
+          python -c "import json; \
+                     d=json.load(open('/tmp/cixp/ablation.json')); \
+                     names={r['approach'] for r in d['rows']}; \
+                     assert names == {'empty','full_diagram','random_subset','top_degree','bm25'}, names; \
+                     print('ablation smoke ok')"

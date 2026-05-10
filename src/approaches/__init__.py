@@ -59,11 +59,48 @@ def _factory_human_like_agent() -> _FactoryFn:
     return build_runner
 
 
+# Lightweight baselines. Query-agnostic ones have no model dependencies; bm25
+# uses rank_bm25 (small, pure-Python). All run in CI without external services.
+def _factory_empty() -> _FactoryFn:
+    from src.approaches.baselines import build_empty
+
+    return build_empty
+
+
+def _factory_full_diagram() -> _FactoryFn:
+    from src.approaches.baselines import build_full_diagram
+
+    return build_full_diagram
+
+
+def _factory_random_subset() -> _FactoryFn:
+    from src.approaches.baselines import build_random_subset
+
+    return build_random_subset
+
+
+def _factory_top_degree() -> _FactoryFn:
+    from src.approaches.baselines import build_top_degree
+
+    return build_top_degree
+
+
+def _factory_bm25() -> _FactoryFn:
+    from src.approaches.baselines import build_bm25
+
+    return build_bm25
+
+
 REGISTRY: dict[str, Callable[[], _FactoryFn]] = {
     "rag_classes_filter": _factory_rag_classes_filter,
     "anchor_neighbors": _factory_anchor_neighbors,
     "agentic_chunks": _factory_agentic_chunks,
     "human_like_agent": _factory_human_like_agent,
+    "empty": _factory_empty,
+    "full_diagram": _factory_full_diagram,
+    "random_subset": _factory_random_subset,
+    "top_degree": _factory_top_degree,
+    "bm25": _factory_bm25,
 }
 
 
@@ -90,3 +127,4 @@ __all__ = [
     "list_approaches",
     "get_runner",
 ]
+

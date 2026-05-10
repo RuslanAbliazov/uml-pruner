@@ -5,6 +5,7 @@ tiktoken>=0.7.0
 tenacity>=8.2.0
 tqdm>=4.66.0
 numpy>=1.24.0
+rank-bm25>=0.2.2
 
 # For local embedding-based retrieval, additionally install:
 #   pip install -r requirements-embeddings.txt

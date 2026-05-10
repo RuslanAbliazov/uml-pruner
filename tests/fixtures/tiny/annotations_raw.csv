@@ -1,0 +1,8 @@
+_id,sample_id,task_id,annotator,central_node,query,entity_annotations,slider_state,notes,status,template
+r1,s1,t1,Alice,p.A,test query 1,"{""p.A"": ""required"", ""p.B"": ""required"", ""p.C"": ""useful""}","{}",,Finalized,False
+r2,s1,t1,Bob,p.A,test query 1,"{""p.A"": ""required"", ""p.B"": ""useful"", ""p.C"": ""useful"", ""p.D"": ""irrelevant""}","{}",,Finalized,False
+r3,s1,t1,Carol,p.A,test query 1,"{""p.A"": ""required"", ""p.B"": ""required"", ""p.C"": ""irrelevant""}","{}",,Finalized,False
+r4,s2,t2,Alice,p.D,test query 2,"{""p.D"": ""required"", ""p.E"": ""useful""}","{}",,Finalized,False
+r5,s2,t2,Bob,p.D,test query 2,"{""p.D"": ""required"", ""p.E"": ""useful""}","{}",,Finalized,False
+r6,s3,t3,Alice,p.A,test query 3,"{""p.A"": ""required""}","{}",,Finalized,False
+r7,s4,t4,Alice,p.A,test query 4,"{""p.A"": ""required""}","{}",,In Progress,False
