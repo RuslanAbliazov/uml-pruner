@@ -1,0 +1,51 @@
+{
+  "nodes": [
+    {
+      "node_id": "p.A",
+      "name": "A",
+      "type": "class",
+      "methods": ["public foo()", "public bar(int x)"],
+      "params": ["int counter"],
+      "description": ""
+    },
+    {
+      "node_id": "p.B",
+      "name": "B",
+      "type": "class",
+      "methods": ["public run()"],
+      "params": [],
+      "description": ""
+    },
+    {
+      "node_id": "p.C",
+      "name": "C",
+      "type": "interface",
+      "methods": ["void execute()"],
+      "params": [],
+      "description": ""
+    },
+    {
+      "node_id": "p.D",
+      "name": "D",
+      "type": "class",
+      "methods": [],
+      "params": [],
+      "description": ""
+    },
+    {
+      "node_id": "p.E",
+      "name": "E",
+      "type": "class",
+      "methods": [],
+      "params": [],
+      "description": ""
+    }
+  ],
+  "edges": [
+    {"node_id_from": "p.A", "node_id_to": "p.B", "description": "Association"},
+    {"node_id_from": "p.A", "node_id_to": "p.C", "description": "Dependency"},
+    {"node_id_from": "p.B", "node_id_to": "p.C", "description": "Inheritance"},
+    {"node_id_from": "p.B", "node_id_to": "p.D", "description": "Association"},
+    {"node_id_from": "p.D", "node_id_to": "p.E", "description": "Inheritance"}
+  ]
+}

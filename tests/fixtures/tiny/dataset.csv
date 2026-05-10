@@ -1,0 +1,3 @@
+_id,sample_id,task_id,central_node,repo,query,entity_annotations
+test1,sample_one,t1,p.A,test/tiny,"Show classes that handle the core flow","{""p.A"": ""required"", ""p.B"": ""required"", ""p.C"": ""useful""}"
+test2,sample_two,t2,p.D,test/tiny,"Show classes related to the inheritance","{""p.D"": ""required"", ""p.E"": ""useful""}"
