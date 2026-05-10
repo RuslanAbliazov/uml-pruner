@@ -319,12 +319,15 @@ async def main_async(args: argparse.Namespace) -> None:
         name = r["baseline"]
         success = "✓" if r["success"] else "✗"
         eval_data = r.get("evaluation", {})
-        f1 = f"{eval_data.get('f1_score', 0):.3f}" if eval_data else "N/A"
-        prec = f"{eval_data.get('precision', 0):.3f}" if eval_data else "N/A"
-        rec = f"{eval_data.get('recall_overall', 0):.3f}" if eval_data else "N/A"
+        prec = 1 if eval_data['micro']['total_predicted'] == 0 else (eval_data['micro']['total_tp_useful'] + eval_data['micro']['total_tp_required']) / (eval_data['micro']['total_predicted'])
+        rec = (eval_data['micro']['total_tp_useful'] + eval_data['micro']['total_tp_required']) / (eval_data['micro']['total_required'] + eval_data['micro']['total_useful'])
+        f1 = 0 if (prec + rec) == 0 else 2 * prec * rec / (prec + rec)
+        # f1 = f"{eval_data['micro']['f1_score']:.3f}" if eval_data else "N/A"
+        # prec = f"{eval_data['micro']['precision']:.3f}" if eval_data else "N/A"
+        # rec = f"{eval_data['micro']['recall_overall']:.3f}" if eval_data else "N/A"
         elapsed = f"{r['elapsed_s']:.1f}"
         
-        print(f"{name:<30} {success:<10} {f1:<10} {prec:<10} {rec:<10} {elapsed:<10}")
+        print(f"{name:<30} {success:<10} {f1:.2f} {prec:.2f} {rec:.2f} {elapsed:<2}")
     
     print("\n" + "="*60)
     print(f"Сводный отчет сохранен: {summary_path}")
