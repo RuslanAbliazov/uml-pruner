@@ -154,6 +154,36 @@ async def _execute_single_prune_step(
     return data, info
 
 
+def _filter_graph_by_excluded(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    excluded_ids: list[str],
+) -> dict[str, Any]:
+    """Отфильтровать граф, удалив исключённые вершины.
+    
+    Args:
+        nodes: список всех узлов
+        edges: список всех рёбер
+        excluded_ids: список node_id которые нужно исключить
+    
+    Returns:
+        {"nodes": [...], "edges": [...]} - граф без исключённых вершин
+    """
+    excluded_set = set(excluded_ids)
+    
+    # Узлы без исключённых
+    filtered_nodes = [n for n in nodes if n.get("node_id") not in excluded_set]
+    
+    # Рёбра: оставляем только если оба конца НЕ в excluded
+    filtered_edges = [
+        e for e in edges
+        if e.get("node_id_from") not in excluded_set
+        and e.get("node_id_to") not in excluded_set
+    ]
+    
+    return {"nodes": filtered_nodes, "edges": filtered_edges}
+
+
 async def prune_subgraph(
     *,
     query: str,
@@ -228,6 +258,22 @@ async def prune_subgraph(
         # Никаких проверок на конкретные поля!
         for key, value in data.items():
             context[key] = value
+        
+        # АВТОМАТИЧЕСКАЯ ГЕНЕРАЦИЯ ГРАФОВ ДЛЯ EXCLUDED ПОЛЕЙ
+        # Если LLM вернул поле с суффиксом _excluded (например, nodes_excluded),
+        # автоматически создаём отфильтрованный граф {prefix}_excluded_graph
+        for key, value in data.items():
+            if key.endswith("_excluded") and isinstance(value, list):
+                # Извлекаем префикс (nodes_excluded → nodes)
+                graph_key = f"{key}_graph"
+                
+                # Фильтруем граф, убирая исключённые вершины
+                filtered_graph = _filter_graph_by_excluded(
+                    sub_nodes, sub_edges, value
+                )
+                
+                # Добавляем в context для следующих шагов
+                context[graph_key] = filtered_graph
         
         # Запоминаем результат последнего шага
         last_step_data = data

@@ -1,0 +1,23 @@
+User Query: "{query}"
+
+Previously excluded classes (step 1):
+{nodes_excluded}
+
+Filtered graph (without excluded classes):
+{nodes_excluded_graph}
+
+Task: Classify the REMAINING classes as REQUIRED, USEFUL, or IRRELEVANT.
+
+Consider:
+1. The obviously irrelevant classes have already been removed.
+2. Which of the remaining classes directly answer the query?
+3. Which provide valuable supporting context?
+4. Which are still not needed despite passing the first filter?
+
+Remember: Being structurally connected to an important class is NOT sufficient. Only include classes that add real understanding to the query.
+
+Return JSON in exactly this shape (use full node_ids; omit IRRELEVANT classes entirely):
+{{
+  "required": ["full.node.id.1", ...],
+  "useful": ["full.node.id.2", ...]
+}}

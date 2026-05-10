@@ -1,0 +1,18 @@
+User Query: "{query}"
+
+JSON:
+{subgraph_json}
+
+Task: Identify classes that are DEFINITELY NOT NEEDED to answer the query.
+
+Think step by step:
+1. What is the query asking about?
+2. Which classes are clearly unrelated (utilities, logging, config, etc.)?
+3. Are there any classes you are 100% sure don't contribute to understanding the query?
+
+Important: Be conservative. Only exclude classes you are absolutely certain are irrelevant. When in doubt, keep the class.
+
+Return JSON in exactly this shape (use full node_ids):
+{{
+  "nodes_excluded": ["full.node.id.1", "full.node.id.2", ...]
+}}
