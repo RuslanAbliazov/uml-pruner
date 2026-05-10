@@ -13,9 +13,9 @@ name: CI
 
 on:
   push:
-    branches: [main, baselines-agreement-ci]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 jobs:
   test:
@@ -93,10 +93,11 @@ jobs:
                      print('oracle smoke ok')"
 
       # Ablation across only the cheap baselines, on the tiny fixture.
+      # bm25 is in there because rank_bm25 is a core dependency now.
       - name: Ablation CLI smoke
         run: |
           python scripts/ablation.py \
-            --approaches empty full_diagram random_subset top_degree \
+            --approaches empty full_diagram random_subset top_degree bm25 \
             --dataset      tests/fixtures/tiny/dataset.csv \
             --diagrams-dir tests/fixtures/tiny/diagrams_normalized \
             --output-root  /tmp/cixp/results \
@@ -104,5 +105,5 @@ jobs:
           python -c "import json; \
                      d=json.load(open('/tmp/cixp/ablation.json')); \
                      names={r['approach'] for r in d['rows']}; \
-                     assert names == {'empty','full_diagram','random_subset','top_degree'}, names; \
+                     assert names == {'empty','full_diagram','random_subset','top_degree','bm25'}, names; \
                      print('ablation smoke ok')"

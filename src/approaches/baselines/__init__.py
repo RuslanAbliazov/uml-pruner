@@ -1,9 +1,8 @@
-"""Query-agnostic baseline approaches.
+"""Baselines.
 
-These exist to give every "real" approach a sanity floor / ceiling. They are
-deliberately simple, deterministic (where applicable), and require neither
-LLM nor embedding-model dependencies — so they can run in CI without any
-external services.
+Lightweight reference approaches for "real" approaches to be compared
+against. None of the query-agnostic ones load any model; ``bm25`` pulls in
+``rank_bm25`` (small, pure-Python) — that's the only optional dependency.
 
 Registered names (in ``src.approaches.__init__.REGISTRY``):
 
@@ -14,6 +13,9 @@ Registered names (in ``src.approaches.__init__.REGISTRY``):
                           Seeded per ``sample_id`` for reproducibility.
     * ``top_degree``    — predict the top-K nodes by total degree (in + out).
                           Query-agnostic graph centrality baseline.
+    * ``bm25``          — predict top-K nodes by BM25 against the query, over
+                          the same node-text serialization the embedding
+                          retriever uses. Apples-to-apples sparse vs. dense.
 
 Configuration (all optional, in ``configs/config.yaml`` under
 ``approaches.<name>``):
@@ -24,6 +26,8 @@ Configuration (all optional, in ``configs/config.yaml`` under
         seed: 42           # base seed; per-sample seed = (seed, sample_id)
       top_degree:
         size: 5            # how many top-degree nodes to keep
+      bm25:
+        size: 5            # how many top-BM25 nodes to keep
 
 Oracle baselines (``central_plus_neighbors``, ``gold_only``) live in
 ``src/eval/oracle_baselines.py`` instead of here, because they intentionally
@@ -36,6 +40,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.approaches.baselines.runner import (
+    BM25Baseline,
     EmptyBaseline,
     FullDiagramBaseline,
     RandomSubsetBaseline,
@@ -85,11 +90,18 @@ def build_top_degree(cfg: Any | None = None) -> TopDegreeBaseline:
     return TopDegreeBaseline(size=size)
 
 
+def build_bm25(cfg: Any | None = None) -> BM25Baseline:
+    size = _read_int(cfg, "bm25", "size", default=5)
+    return BM25Baseline(size=size)
+
+
 __all__ = [
+    "BM25Baseline",
     "EmptyBaseline",
     "FullDiagramBaseline",
     "RandomSubsetBaseline",
     "TopDegreeBaseline",
+    "build_bm25",
     "build_empty",
     "build_full_diagram",
     "build_random_subset",

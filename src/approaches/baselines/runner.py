@@ -1,28 +1,25 @@
-"""Query-agnostic baseline runners.
+"""Baseline runners.
 
-Every runner here implements the standard :class:`ApproachRunner` protocol
-(``async def run(inputs) -> ApproachResult``) and produces output in the
-same shape as the real pipelines, so the standard evaluator and
-``scripts/run.py`` work without changes.
+Two flavours:
 
-Important: none of these baselines look at the query. They exist purely as
-floor/ceiling references for the "real" approaches:
-
-    * ``empty``         — F1 floor when predicting nothing.
-    * ``full_diagram``  — F1 floor when predicting everything (recall=1.0).
-    * ``random_subset`` — what F1 would you get if you didn't try at all.
-    * ``top_degree``    — what F1 would you get if you used pure structure.
+* Query-agnostic (``empty``, ``full_diagram``, ``random_subset``, ``top_degree``)
+  — no model, no LLM, no query inspection. Floor/ceiling references.
+* Lexical (``bm25``) — uses BM25 over the same node-text serialization as
+  the embedding retriever, so dense retrieval can be compared directly to
+  classical sparse retrieval. Pulls in ``rank_bm25`` (small pure-Python).
 
 Why include these in a serious benchmark: they make claims like "our
 approach reaches F1 = 0.40" interpretable. If ``random_subset`` of the same
-size already reaches F1 = 0.35, the "real" approach is contributing very
-little. If ``random_subset`` reaches F1 = 0.05, the contribution is real.
+size already reaches F1 = 0.35, the "real" approach contributes very little.
+If ``bm25`` matches your dense retriever's score, the embedding work isn't
+pulling its weight on this dataset.
 """
 
 from __future__ import annotations
 
 import hashlib
 import random
+import re
 from collections import Counter
 from typing import Any
 
@@ -221,6 +218,159 @@ class TopDegreeBaseline:
                 "n_available": len(ids),
                 "n_picked": len(chosen),
                 "max_degree": max(deg.values()) if deg else 0,
+            },
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+# ---- BM25 (lexical) -------------------------------------------------------
+
+# Tokenizer: splits CamelCase / PascalCase / snake_case into pieces and
+# lowercases. Drops single-char tokens (low signal, high noise from variable
+# names like "i", "x").
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_TOKEN_RE = re.compile(r"[A-Za-z]+")
+
+
+def _tokenize_for_bm25(text: str) -> list[str]:
+    """Split text into lowercase tokens, splitting CamelCase along the way.
+
+    >>> _tokenize_for_bm25("HashMap of URLParser instances")
+    ['hash', 'map', 'of', 'url', 'parser', 'instances']
+
+    Wait — "of" is 2 chars so kept; single-char tokens are dropped.
+    """
+    spaced = _CAMEL_BOUNDARY.sub(" ", text)
+    return [t.lower() for t in _TOKEN_RE.findall(spaced) if len(t) > 1]
+
+
+class BM25Baseline:
+    """Top-K nodes by BM25 score against the query.
+
+    Uses the SAME ``nodes_to_texts`` serialization as the embedding retriever
+    in ``src.rag``, so BM25 vs. dense retrieval is an apples-to-apples
+    comparison: both see the same per-node text.
+
+    Tokenization splits CamelCase/snake_case to lowercase pieces (so
+    ``HashMap`` matches a query of ``hash map``).
+
+    Edge cases:
+        * Empty diagram or ``size=0`` → predict nothing.
+        * Query has no usable tokens (all 1-char or non-letter) → predict nothing.
+        * BM25 returns all-zero scores (typical on N≤2 corpora because of the
+          IDF formula) → predict nothing rather than picking arbitrary nodes
+          by tie-break.
+    """
+
+    name = "bm25"
+
+    def __init__(self, size: int = 5) -> None:
+        if size < 0:
+            raise ValueError(f"size must be >= 0, got {size}")
+        self._size = size
+
+    async def run(self, inputs: ApproachInputs) -> ApproachResult:
+        nodes = list(inputs.nodes)
+        if not nodes or self._size == 0:
+            return ApproachResult(
+                approach=self.name,
+                metadata={
+                    "strategy": "bm25",
+                    "size": self._size,
+                    "n_available": len(nodes),
+                },
+            )
+
+        query_tokens = _tokenize_for_bm25(inputs.query or "")
+        if not query_tokens:
+            return ApproachResult(
+                approach=self.name,
+                metadata={
+                    "strategy": "bm25",
+                    "size": self._size,
+                    "no_query_tokens": True,
+                },
+            )
+
+        # Lazy imports — keep the registry loadable even if rank_bm25 isn't
+        # installed yet (and avoid coupling unrelated tests to it).
+        try:
+            from rank_bm25 import BM25Okapi
+        except ImportError as e:
+            raise ImportError(
+                "rank_bm25 is not installed. Run `pip install rank-bm25` "
+                "or reinstall via `pip install -r requirements.txt`."
+            ) from e
+        from src.rag.node_to_text import nodes_to_texts
+
+        texts = nodes_to_texts(nodes, inputs.edges)
+        corpus = [_tokenize_for_bm25(t) for t in texts]
+        # BM25Okapi crashes on empty docs; guard with a placeholder token that
+        # is unlikely to appear in any real query.
+        corpus = [toks if toks else ["__empty_doc__"] for toks in corpus]
+
+        bm25 = BM25Okapi(corpus)
+        scores = bm25.get_scores(query_tokens)
+
+        if not any(s > 0 for s in scores):
+            # All-zero scores: query terms don't appear in any node, or the
+            # corpus is too small for BM25Okapi's IDF to be positive. Either
+            # way, BM25 has nothing to say — abstain rather than return
+            # arbitrary lex-first nodes.
+            return ApproachResult(
+                approach=self.name,
+                metadata={
+                    "strategy": "bm25",
+                    "size": self._size,
+                    "all_zero_scores": True,
+                    "n_query_tokens": len(query_tokens),
+                },
+            )
+
+        # Rank: score DESC, then node_id ASC for deterministic tie-breaks.
+        ranked = sorted(
+            range(len(nodes)),
+            key=lambda i: (-float(scores[i]), nodes[i].get("node_id", "")),
+        )
+        chosen: list[str] = []
+        seen: set[str] = set()
+        for idx in ranked:
+            if scores[idx] <= 0:
+                break  # don't pad the prediction with zero-score nodes
+            nid = nodes[idx].get("node_id")
+            if isinstance(nid, str) and nid and nid not in seen:
+                chosen.append(nid)
+                seen.add(nid)
+                if len(chosen) >= self._size:
+                    break
+
+        if not chosen:
+            return ApproachResult(
+                approach=self.name,
+                metadata={
+                    "strategy": "bm25",
+                    "size": self._size,
+                    "no_positive_scores": True,
+                    "n_query_tokens": len(query_tokens),
+                },
+            )
+
+        nodes_out, edges_out = _select_subgraph(inputs, set(chosen))
+        return ApproachResult(
+            approach=self.name,
+            nodes=nodes_out,
+            edges=edges_out,
+            required_node_ids=sorted(chosen),
+            useful_node_ids=[],
+            metadata={
+                "strategy": "bm25",
+                "size": self._size,
+                "n_available": len(nodes),
+                "n_picked": len(chosen),
+                "n_query_tokens": len(query_tokens),
+                "max_score": float(max(scores)),
             },
         )
 

@@ -20,11 +20,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.approaches.baselines.runner import (  # noqa: E402
+    BM25Baseline,
     EmptyBaseline,
     FullDiagramBaseline,
     RandomSubsetBaseline,
     TopDegreeBaseline,
     _stable_seed,
+    _tokenize_for_bm25,
 )
 from src.core.types import ApproachInputs  # noqa: E402
 
@@ -183,11 +185,11 @@ def test_top_degree_negative_size_raises():
 
 
 def test_baselines_are_registered():
-    """The registry exposes the four baselines under their canonical names."""
+    """The registry exposes every baseline under its canonical name."""
     from src.approaches import list_approaches
 
     names = list_approaches()
-    for n in ("empty", "full_diagram", "random_subset", "top_degree"):
+    for n in ("empty", "full_diagram", "random_subset", "top_degree", "bm25"):
         assert n in names, f"baseline '{n}' not in registry: {names}"
 
 
@@ -198,6 +200,7 @@ def test_factory_get_runner_returns_correct_type():
     assert isinstance(get_runner("full_diagram"), FullDiagramBaseline)
     assert isinstance(get_runner("random_subset"), RandomSubsetBaseline)
     assert isinstance(get_runner("top_degree"), TopDegreeBaseline)
+    assert isinstance(get_runner("bm25"), BM25Baseline)
 
 
 def test_random_subset_reads_size_from_config():
@@ -224,3 +227,168 @@ def test_factory_handles_missing_config_gracefully():
 
     runner = get_runner("random_subset", None)
     assert runner._size == 5  # noqa: SLF001
+
+
+# ---- bm25 -----------------------------------------------------------------
+
+
+def _bm25_diagram() -> dict:
+    """Larger fixture for BM25 tests.
+
+    BM25Okapi gives all-zero scores on N≤2 corpora (IDF formula edge case),
+    so we use 5 nodes with distinct names for sane test signals.
+    """
+    return {
+        "nodes": [
+            {"node_id": "p.AsyncEventBus", "name": "AsyncEventBus", "type": "class",
+             "methods": ["public publishEvent"], "params": []},
+            {"node_id": "p.UserService", "name": "UserService", "type": "class",
+             "methods": ["public createUser"], "params": []},
+            {"node_id": "p.OrderRepository", "name": "OrderRepository", "type": "class",
+             "methods": ["public findById"], "params": []},
+            {"node_id": "p.HashMapImpl", "name": "HashMapImpl", "type": "class",
+             "methods": [], "params": []},
+            {"node_id": "p.LinkedListImpl", "name": "LinkedListImpl", "type": "class",
+             "methods": [], "params": []},
+        ],
+        "edges": [],
+    }
+
+
+def test_tokenize_camel_case():
+    assert _tokenize_for_bm25("HashMap") == ["hash", "map"]
+    assert _tokenize_for_bm25("URLParser") == ["url", "parser"]
+    assert _tokenize_for_bm25("user_name") == ["user", "name"]
+    assert _tokenize_for_bm25("AsyncEventBus") == ["async", "event", "bus"]
+
+
+def test_tokenize_drops_single_chars_and_digits():
+    """Single-char tokens and pure digits are filtered out."""
+    assert _tokenize_for_bm25("a B Cd") == ["cd"]
+    assert _tokenize_for_bm25("p123") == []  # no letter sequence ≥ 2 chars
+    # Digits stripped, letter-runs kept:
+    assert _tokenize_for_bm25("getX42") == ["get"]
+
+
+def test_bm25_picks_lexically_matching_node():
+    """Query mentions the class concept → BM25 should rank that class first."""
+    inputs = ApproachInputs(
+        query="event bus async publish",
+        diagram=_bm25_diagram(),
+        sample_id="s1",
+    )
+    res = asyncio.run(BM25Baseline(size=1).run(inputs))
+    assert res.required_node_ids == ["p.AsyncEventBus"]
+
+
+def test_bm25_handles_pascal_case_in_query():
+    """Query with PascalCase class name should still match the right node."""
+    inputs = ApproachInputs(
+        query="HashMapImpl",
+        diagram=_bm25_diagram(),
+        sample_id="s",
+    )
+    res = asyncio.run(BM25Baseline(size=1).run(inputs))
+    assert res.required_node_ids == ["p.HashMapImpl"]
+
+
+def test_bm25_returns_top_k_in_score_order():
+    """size=2 should pick the top two by score."""
+    inputs = ApproachInputs(
+        query="user order repository",
+        diagram=_bm25_diagram(),
+        sample_id="s",
+    )
+    res = asyncio.run(BM25Baseline(size=2).run(inputs))
+    # OrderRepository directly matches "order" + "repository";
+    # UserService matches "user". Both should be in the picks.
+    assert "p.OrderRepository" in res.required_node_ids
+    assert "p.UserService" in res.required_node_ids
+    assert len(res.required_node_ids) == 2
+
+
+def test_bm25_empty_query_returns_empty():
+    """No usable tokens in the query → predict nothing rather than guess."""
+    inputs = ApproachInputs(query="", diagram=_bm25_diagram(), sample_id="s")
+    res = asyncio.run(BM25Baseline(size=5).run(inputs))
+    assert res.required_node_ids == []
+    assert res.metadata.get("no_query_tokens") is True
+
+
+def test_bm25_query_with_only_short_tokens_returns_empty():
+    """Single-char tokens are dropped → no usable query tokens."""
+    inputs = ApproachInputs(query="a b c", diagram=_bm25_diagram(), sample_id="s")
+    res = asyncio.run(BM25Baseline(size=5).run(inputs))
+    assert res.required_node_ids == []
+
+
+def test_bm25_no_match_returns_empty():
+    """Query has tokens but none of them appear in any node → abstain."""
+    inputs = ApproachInputs(
+        query="quantum entanglement chromodynamics",
+        diagram=_bm25_diagram(),
+        sample_id="s",
+    )
+    res = asyncio.run(BM25Baseline(size=5).run(inputs))
+    # All scores are 0; baseline returns empty rather than arbitrary picks.
+    assert res.required_node_ids == []
+    # Either branch (all-zero or no-positive) is fine — both indicate abstention.
+    assert (
+        res.metadata.get("all_zero_scores") is True
+        or res.metadata.get("no_positive_scores") is True
+    )
+
+
+def test_bm25_empty_diagram():
+    inputs = ApproachInputs(query="anything", diagram={"nodes": [], "edges": []})
+    res = asyncio.run(BM25Baseline(size=5).run(inputs))
+    assert res.required_node_ids == []
+
+
+def test_bm25_size_zero_returns_empty():
+    res = asyncio.run(BM25Baseline(size=0).run(
+        ApproachInputs(query="event", diagram=_bm25_diagram(), sample_id="s")
+    ))
+    assert res.required_node_ids == []
+
+
+def test_bm25_negative_size_raises():
+    with pytest.raises(ValueError):
+        BM25Baseline(size=-1)
+
+
+def test_bm25_subgraph_edges_match_picks():
+    """Only edges between picked nodes should survive."""
+    diagram = _bm25_diagram()
+    diagram["edges"] = [
+        {"node_id_from": "p.UserService", "node_id_to": "p.OrderRepository",
+         "description": "Dependency"},
+        {"node_id_from": "p.HashMapImpl", "node_id_to": "p.LinkedListImpl",
+         "description": "Association"},
+    ]
+    inputs = ApproachInputs(
+        query="user order repository",
+        diagram=diagram,
+        sample_id="s",
+    )
+    res = asyncio.run(BM25Baseline(size=2).run(inputs))
+    picked = set(res.required_node_ids)
+    # Edge between two picked nodes survives; the other doesn't.
+    assert len(res.edges) == 1
+    assert res.edges[0]["node_id_from"] in picked
+    assert res.edges[0]["node_id_to"] in picked
+
+
+def test_bm25_factory_reads_size_from_config():
+    from src.approaches import get_runner
+
+    class _Cfg:
+        def __init__(self, d):
+            self._d = d
+
+        def get(self, k, default=None):
+            return self._d.get(k, default)
+
+    cfg = _Cfg({"approaches": _Cfg({"bm25": _Cfg({"size": 12})})})
+    runner = get_runner("bm25", cfg)
+    assert runner._size == 12  # noqa: SLF001

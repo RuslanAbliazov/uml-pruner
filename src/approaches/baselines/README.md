@@ -25,6 +25,19 @@ must never be reported as a real approach result.
 | `random_subset`| `size` node_ids picked uniformly at random        |
 | `top_degree`   | top-`size` nodes by total degree (in+out)         |
 
+## Lexical baseline
+
+| Name   | What it predicts                                                                |
+|--------|---------------------------------------------------------------------------------|
+| `bm25` | top-`size` nodes by BM25 against the query, over the same node-text serialization (`src.rag.node_to_text.nodes_to_texts`) the embedding retriever uses. |
+
+`bm25` is the classical sparse retrieval comparison for any dense retriever
+work: if the dense retriever doesn't beat BM25 on this dataset, the
+embedding stack is not earning its keep. The tokenizer splits CamelCase /
+snake_case to lowercase pieces and drops single-char tokens, so
+`HashMapImpl` matches a query of `hash map`. Powered by the small
+`rank_bm25` package (added to `requirements.txt`).
+
 Configurable via `configs/config.yaml` (all keys optional):
 
 ```yaml
@@ -33,6 +46,8 @@ approaches:
     size: 5    # default ≈ median(|gold|) on the dataset
     seed: 42
   top_degree:
+    size: 5
+  bm25:
     size: 5
 ```
 
@@ -47,12 +62,13 @@ python scripts/run.py --approach empty
 python scripts/run.py --approach full_diagram
 python scripts/run.py --approach random_subset
 python scripts/run.py --approach top_degree
+python scripts/run.py --approach bm25
 
-# All four side-by-side, plus your real approaches, in one table:
+# All five side-by-side, plus your real approaches, in one table:
 python scripts/ablation.py \
-    --approaches empty full_diagram random_subset top_degree \
+    --approaches empty full_diagram random_subset top_degree bm25 \
                  anchor_neighbors rag_classes_filter \
-    --output data/results/ablation.json
+    --output reports/$(date +%Y-%m-%d).ablation.json
 ```
 
 `ablation.py` writes a side-by-side comparison table to stdout and a
