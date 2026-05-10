@@ -62,6 +62,32 @@ class PipelineOutcome:
     )
 
 
+def _save_stage2_anchors(
+    anchors: list[str],
+    query: str,
+    inputs: ApproachInputs,
+) -> None:
+    """Сохранить список anchor-классов после этапа 2."""
+    out_dir = Path("data/stage2_anchors")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_repo = inputs.repo.replace("/", "_") if inputs.repo else "unknown"
+    sample_id = inputs.sample_id or "nosample"
+    fname = f"{safe_repo}__{sample_id}.json"
+    with (out_dir / fname).open("w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "anchors": anchors,
+                "query": query,
+                "sample_id": inputs.sample_id,
+                "repo": inputs.repo,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+
+
 def _save_stage3_graph(
     sub_nodes: list[dict[str, Any]],
     sub_edges: list[dict[str, Any]],
@@ -282,6 +308,14 @@ class AnchorNeighborsPipeline:
         anchors: list[str] = list(
             s2.payload.get("anchors") or [s2.payload["anchor"]]
         )
+        
+        # Сохраняем anchor-классы для возможности пропуска этапов 1-2
+        if s2.is_ok():
+            _save_stage2_anchors(
+                anchors=anchors,
+                query=inputs.query,
+                inputs=inputs,
+            )
 
         # ---- этап 3 ---------------------------------------------------
         try:

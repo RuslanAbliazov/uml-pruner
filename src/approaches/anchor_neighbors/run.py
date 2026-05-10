@@ -69,7 +69,7 @@ from src.approaches.anchor_neighbors.settings import (  # noqa: E402
     build_runner,
     load_settings,
 )
-from src.approaches.anchor_neighbors.stage_outputs import StageName  # noqa: E402
+from src.approaches.anchor_neighbors.stage_outputs import StageName, StageOutcome  # noqa: E402
 from src.core.config import load_config  # noqa: E402
 from src.core.io import load_diagram, save_json  # noqa: E402
 from src.core.types import ApproachInputs  # noqa: E402
@@ -161,6 +161,13 @@ def parse_args() -> argparse.Namespace:
         help="Не считать метрики (нужно только для прогона без эталона).",
     )
     p.add_argument(
+        "--from-stage2",
+        type=Path,
+        default=None,
+        help="Путь к директории с сохраненными anchor-классами (data/stage2_anchors). "
+             "Если указан, пропускает этапы 1-2 и запускает с этапа 3 (neighbors).",
+    )
+    p.add_argument(
         "--from-stage3",
         type=Path,
         default=None,
@@ -195,6 +202,192 @@ async def _process_one(
         repo=sample.repo,
     )
     return await pipeline.run_with_stages(inputs, until=until)
+
+
+async def _run_from_stage2(
+    args: argparse.Namespace,
+    pipeline: AnchorNeighborsPipeline,
+    settings,
+) -> int:
+    """Запустить с этапа 3 из сохраненных anchor-классов."""
+    from src.approaches.anchor_neighbors import stage3_expand_neighbors, stage4_prune
+    from src.approaches._common.compressor import filter_subgraph
+    
+    stage2_dir = args.from_stage2
+    if not stage2_dir.exists():
+        print(f"[error] Директория {stage2_dir} не существует.", file=sys.stderr)
+        return 2
+    
+    # Собираем все JSON файлы из директории stage2
+    stage2_files = sorted(stage2_dir.glob("*.json"))
+    if not stage2_files:
+        print(f"[error] В директории {stage2_dir} нет JSON файлов.", file=sys.stderr)
+        return 2
+    
+    # Применяем фильтр --limit если указан
+    if args.limit and args.limit > 0:
+        stage2_files = stage2_files[:args.limit]
+    
+    # Подготовка путей вывода
+    out_dir: Path = settings.pipeline.outputs_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    samples_dir = out_dir / "samples"
+    samples_dir.mkdir(exist_ok=True)
+    report_path = out_dir / "report.jsonl"
+    aggregate_path = out_dir / "aggregate.json"
+    
+    sample_reports: list[SampleReport] = []
+    runtime_errors: list[dict] = []
+    
+    # Загружаем эталон если нужен
+    gold_index = None
+    missing_gold: list[tuple[str, str]] = []
+    if not args.no_eval:
+        gold_index = GoldTruthIndex.from_csv(args.gold)
+    
+    # Загружаем диаграммы
+    diagram_cache: dict[str, dict] = {}
+    
+    until = StageName(args.until) if args.until != StageName.ANCHOR.value else StageName.PRUNE
+    
+    started = time.time()
+    with JsonlReportWriter(report_path) as report:
+        for idx, stage2_file in tqdm(
+            enumerate(stage2_files),
+            total=len(stage2_files),
+            desc="Processing from stage2",
+            unit="sample",
+        ):
+            try:
+                # Загружаем сохраненные данные stage2
+                with stage2_file.open("r", encoding="utf-8") as f:
+                    stage2_data = json.load(f)
+                
+                anchors = stage2_data["anchors"]
+                query = stage2_data["query"]
+                sample_id = stage2_data.get("sample_id", f"sample_{idx:04d}")
+                repo = stage2_data.get("repo", "")
+                
+                # Загружаем полную диаграмму
+                fname = diagram_filename_for_repo(repo)
+                if fname not in diagram_cache:
+                    diagram_cache[fname] = load_diagram(args.diagrams_dir / fname)
+                diagram = diagram_cache[fname]
+                
+                nodes = diagram["nodes"]
+                edges = diagram["edges"]
+                node_by_id = {n["node_id"]: n for n in nodes if n.get("node_id")}
+                
+                stages: dict[StageName, "StageOutcome"] = {}
+                
+                # ---- этап 3: расширение соседей ---
+                s3 = stage3_expand_neighbors.expand_neighbors(
+                    anchors=anchors,
+                    nodes=nodes,
+                    edges=edges,
+                    node_by_id=node_by_id,
+                    cap=settings.pipeline.max_subgraph_nodes,
+                )
+                stages[StageName.NEIGHBORS] = s3
+                
+                if not s3.is_ok() or until == StageName.NEIGHBORS:
+                    # Строим результат только из этапа 3
+                    final_nodes = s3.payload.get("sub_nodes", [])
+                    final_edges = s3.payload.get("sub_edges", [])
+                    required = []
+                    useful = []
+                else:
+                    # ---- этап 4: прунинг ---
+                    s4 = await stage4_prune.prune_subgraph(
+                        query=query,
+                        sub_nodes=s3.payload["sub_nodes"],
+                        sub_edges=s3.payload["sub_edges"],
+                        llm=pipeline._llm,
+                        prune_steps=settings.pipeline.prune_steps,
+                        tracer=pipeline._tracer,
+                        sample_id=sample_id,
+                    )
+                    stages[StageName.PRUNE] = s4
+                    
+                    if s4.is_ok():
+                        required = s4.payload.get("required", [])
+                        useful = s4.payload.get("useful", [])
+                        keep = set(required) | set(useful)
+                        final_nodes, final_edges = filter_subgraph(
+                            s3.payload["sub_nodes"],
+                            s3.payload["sub_edges"],
+                            keep,
+                        )
+                    else:
+                        # Если прунинг не удался, берём результат этапа 3
+                        final_nodes = s3.payload.get("sub_nodes", [])
+                        final_edges = s3.payload.get("sub_edges", [])
+                        required = []
+                        useful = []
+                
+                # Сохраняем результат
+                result_diagram = {
+                    "nodes": final_nodes,
+                    "edges": final_edges,
+                }
+                save_json(result_diagram, samples_dir / f"{sample_id}.json")
+                
+            except Exception as e:  # noqa: BLE001
+                import traceback as tb
+                tb_str = "".join(tb.format_exception(type(e), e, e.__traceback__))
+                runtime_errors.append({
+                    "index": idx,
+                    "file": str(stage2_file),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "traceback": tb_str,
+                })
+                print(
+                    f"[error] Failed to process {stage2_file.name}:\n"
+                    f"{type(e).__name__}: {str(e)}",
+                    file=sys.stderr,
+                )
+                continue
+            
+            # Метрики
+            if gold_index is not None:
+                gold = gold_index.lookup(repo, query)
+                if gold is None:
+                    missing_gold.append((repo, query))
+                    continue
+                rep = build_sample_report(
+                    sample_id=sample_id,
+                    repo=repo,
+                    query=query,
+                    stages=stages,
+                    gold=gold,
+                )
+                sample_reports.append(rep)
+                report.write(rep)
+    
+    elapsed = time.time() - started
+    
+    # Агрегация метрик
+    if sample_reports:
+        agg = aggregate(sample_reports)
+        agg["until"] = until.value
+        agg["from_stage2"] = True
+        agg["elapsed_s"] = round(elapsed, 2)
+        save_json(agg, aggregate_path)
+        print(json.dumps(agg, ensure_ascii=False, indent=2))
+    
+    print(
+        f"\nready: files={len(stage2_files)} processed={len(sample_reports)} "
+        f"errors={len(runtime_errors)} missing_gold={len(missing_gold)} "
+        f"elapsed={elapsed:.1f}s",
+        file=sys.stderr,
+    )
+    if runtime_errors:
+        save_json(runtime_errors, out_dir / "errors.json")
+    if missing_gold:
+        save_json(missing_gold, out_dir / "missing_gold.json")
+    
+    return 0
 
 
 async def _run_from_stage3(
@@ -347,6 +540,10 @@ async def _run_async(args: argparse.Namespace) -> int:
     settings = load_settings(cfg)
     pipeline = build_runner(cfg)
 
+    # Режим запуска с этапа 3 из сохраненных anchor-классов
+    if args.from_stage2:
+        return await _run_from_stage2(args, pipeline, settings)
+    
     # Режим запуска только stage4 из сохраненных данных
     if args.from_stage3:
         return await _run_from_stage3(args, pipeline, settings)
