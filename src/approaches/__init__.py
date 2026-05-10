@@ -59,11 +59,41 @@ def _factory_human_like_agent() -> _FactoryFn:
     return build_runner
 
 
+# Lightweight, query-agnostic baselines. They have no model dependencies, so
+# they live alongside the real approaches and run anywhere (including CI).
+def _factory_empty() -> _FactoryFn:
+    from src.approaches.baselines import build_empty
+
+    return build_empty
+
+
+def _factory_full_diagram() -> _FactoryFn:
+    from src.approaches.baselines import build_full_diagram
+
+    return build_full_diagram
+
+
+def _factory_random_subset() -> _FactoryFn:
+    from src.approaches.baselines import build_random_subset
+
+    return build_random_subset
+
+
+def _factory_top_degree() -> _FactoryFn:
+    from src.approaches.baselines import build_top_degree
+
+    return build_top_degree
+
+
 REGISTRY: dict[str, Callable[[], _FactoryFn]] = {
     "rag_classes_filter": _factory_rag_classes_filter,
     "anchor_neighbors": _factory_anchor_neighbors,
     "agentic_chunks": _factory_agentic_chunks,
     "human_like_agent": _factory_human_like_agent,
+    "empty": _factory_empty,
+    "full_diagram": _factory_full_diagram,
+    "random_subset": _factory_random_subset,
+    "top_degree": _factory_top_degree,
 }
 
 

@@ -7,3 +7,11 @@ logs/
 
 opencode.json
 .DS_Store
+*.patch
+.idea
+.git
+.benchmarks
+.pytest_cache
+.vs*
+*.py[oic]
+*~
