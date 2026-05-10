@@ -1,0 +1,20 @@
+USER QUERY:
+{query}
+
+ANCHOR CLASSES (your starting points):
+{anchors}
+
+Your task: Explore the class diagram starting from these anchor classes and identify all classes relevant to answering the user's query.
+
+Use the available tools to:
+1. Inspect anchor classes to understand their structure
+2. Explore their neighbors (parents, children, dependencies, associations)
+3. Follow interesting relationships to discover related classes
+4. Decide which classes are "required" (core) vs "useful" (supporting context)
+
+Remember:
+- You have a MAXIMUM of {max_steps} tool calls
+- Return JSON with "required" and "useful" lists when done
+- Use full class names (node_id) in your response
+
+Begin your exploration!

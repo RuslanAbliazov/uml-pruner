@@ -1,0 +1,7 @@
+# MCP (Model Context Protocol) dependencies
+# Required for human_like_agent approach
+#
+# Install with:
+#   pip install -r requirements-mcp.txt
+
+mcp>=0.9.0

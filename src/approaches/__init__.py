@@ -54,7 +54,7 @@ def _factory_agentic_chunks() -> _FactoryFn:
 
 
 def _factory_human_like_agent() -> _FactoryFn:
-    from src.approaches.human_like_agent.runner import build_runner
+    from src.approaches.human_like_agent.settings import build_runner
 
     return build_runner
 
