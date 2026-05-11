@@ -309,7 +309,7 @@ if __name__ == "__main__":
         description="MCP server for UML diagram graph navigation"
     )
     parser.add_argument(
-        "diagram_path",
+        "--diagram_path",
         type=str,
         help="Path to normalized diagram JSON file",
     )

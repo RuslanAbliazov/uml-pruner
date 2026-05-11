@@ -15,3 +15,5 @@ opencode.json
 .vs*
 *.py[oic]
 *~
+
+*:Zone.Identifier
