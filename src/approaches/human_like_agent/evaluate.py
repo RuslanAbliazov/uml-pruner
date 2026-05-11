@@ -127,6 +127,7 @@ def evaluate_results(results_dir: Path, dataset: dict[str, dict]) -> dict:
         # Формат: {repo}__{sample_id}.json
         filename = result_file.stem
         parts = filename.split("__")
+        print(parts)
         if len(parts) != 2:
             print(f"Warning: Skipping {result_file.name} (unexpected format)")
             continue

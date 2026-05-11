@@ -26,7 +26,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
 RESULTS_DIR = PROJECT_ROOT / "data" / "results" / "human_like_agent"
 TRACES_DIR = PROJECT_ROOT / "data" / "llm_traces" / "human_like_agent"
-STAGE2_ANCHORS_DIR = PROJECT_ROOT / "data" / "stage2_anchors"
+STAGE2_ANCHORS_DIR = PROJECT_ROOT / "data" / "stage2_anchors_hashed"
 DIAGRAMS_DIR = PROJECT_ROOT / "data" / "diagrams_normalized"
 CURRENT_UML = SCRIPT_DIR / "current_uml.json"
 
@@ -61,8 +61,8 @@ def load_anchors(sample_id: str, repo: str) -> list[str]:
     Returns:
         Список anchor node_ids
     """
-    anchor_file = STAGE2_ANCHORS_DIR / f"{repo.replace('/', '__')}__{sample_id}.json"
-    
+    anchor_file = STAGE2_ANCHORS_DIR / f"{repo.replace('/', '_')}__{sample_id}.json"
+    print(anchor_file)
     if not anchor_file.exists():
         raise FileNotFoundError(
             f"Anchors не найдены: {anchor_file}\n"
@@ -241,7 +241,7 @@ def save_result(sample_id: str, repo: str, query: str, result_json: dict) -> Pat
     """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     
-    output_file = RESULTS_DIR / f"{repo.replace('/', '__')}__{sample_id}.json"
+    output_file = RESULTS_DIR / f"{repo.replace('/', '_')}__{sample_id}.json"
     
     output_data = {
         "sample_id": sample_id,

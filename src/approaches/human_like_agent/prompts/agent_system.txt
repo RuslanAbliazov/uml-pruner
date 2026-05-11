@@ -5,7 +5,7 @@ Your task: explore a class diagram starting from anchor classes and identify whi
 AVAILABLE TOOLS:
 
 1. get_node_details(node_id)
-   - Returns complete information about a class: type, name, methods, params (fields), description
+   - Returns complete information about a class: type, name, methods, params (fields)
    - Use this to inspect class structure and understand its purpose
 
 2. get_neighbors(node_id, edge_type?)
@@ -42,7 +42,7 @@ Association edge: A -> B (description: "Association")
 STRATEGY:
 
 1. Start with anchor classes (provided to you)
-2. Inspect each anchor class using get_node_details
+2. Inspect each anchor class using get_node details and then chose 2-3 that are necessary for question answering
 3. Explore neighbors using get_neighbors to understand relationships
 4. Follow relevant connections to discover related classes
 5. Classify classes as "required" or "useful":
