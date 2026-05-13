@@ -116,7 +116,7 @@ def build_prompt(query: str, anchors: list[str]) -> str:
     user_prompt = user_template.format(
         query=query,
         anchors=json.dumps(anchors, indent=2),
-        max_steps=40  # Хардкодим max_steps, можно вынести в config
+        # max_steps=40  # Хардкодим max_steps, можно вынести в config # Указываем в промте
     )
     
     # Объединить system + user
