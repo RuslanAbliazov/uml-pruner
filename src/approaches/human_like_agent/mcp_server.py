@@ -1,274 +1,277 @@
-"""MCP server providing graph navigation tools for the agent.
+"""Minimal stateful MCP server for UML graph exploration.
 
-Implements Model Context Protocol server with tools for exploring UML class diagrams.
+The agent builds a working graph incrementally by:
+1. Starting with anchors
+2. Previewing neighbors
+3. Adding selected nodes to working memory
+4. Marking nodes as unrecognized/useful/required
 """
 
-from __future__ import annotations
-
+import argparse
 import asyncio
 import json
+import sys
+from pathlib import Path
 from typing import Any
 
 import mcp.server.stdio
 import mcp.types as types
-from mcp.server import NotificationOptions, Server
+from mcp.server import Server
+
+# Limits (configurable via args)
+# MAX_WORKING_GRAPH_SIZE = 30
+# MAX_PREVIEW_NEIGHBORS = 50
 
 
 class GraphNavigationServer:
-    """MCP server wrapping a networkx graph with navigation tools."""
+    """Stateful MCP server with working memory for incremental graph building."""
 
     def __init__(self, graph_data: dict[str, Any]):
-        """Initialize server with graph data.
+        self.full_graph = graph_data
+        self.nodes_by_id = {n["node_id"]: n for n in graph_data["nodes"]}
         
-        Args:
-            graph_data: Dict with 'nodes' and 'edges' keys (from JSON diagram)
-        """
-        self.graph_data = graph_data
-        self.nodes_by_id = {node["node_id"]: node for node in graph_data["nodes"]}
-        
-        # Build adjacency structure for fast neighbor lookup
-        # outgoing[A] = [(B, edge_type)] means A -> B
-        # incoming[B] = [(A, edge_type)] means A -> B
+        # Build adjacency lists
         self.outgoing: dict[str, list[tuple[str, str]]] = {}
         self.incoming: dict[str, list[tuple[str, str]]] = {}
-        
         for edge in graph_data["edges"]:
-            src = edge["node_id_from"]
-            tgt = edge["node_id_to"]
+            src, tgt = edge["node_id_from"], edge["node_id_to"]
             edge_type = edge["description"]
-            
             self.outgoing.setdefault(src, []).append((tgt, edge_type))
             self.incoming.setdefault(tgt, []).append((src, edge_type))
+        
+        # Working memory (important nodes for answering query)
+        self.working_nodes: set[str] = set()  # just node_ids
         
         self.server = Server("graph-navigation")
         self._register_handlers()
 
     def _register_handlers(self):
-        """Register MCP tool handlers."""
-        
         @self.server.list_tools()
         async def handle_list_tools() -> list[types.Tool]:
-            """List available tools."""
             return [
                 types.Tool(
+                    name="add_nodes",
+                    description="Add important nodes to working graph.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "node_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Node IDs to add"
+                            }
+                        },
+                        "required": ["node_ids"],
+                    },
+                ),
+                types.Tool(
+                    name="preview_neighbors",
+                    description="See neighbors WITHOUT adding to working graph. Returns node IDs and edge types only.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "node_id": {"type": "string"},
+                            "direction": {
+                                "type": "string",
+                                "enum": ["outgoing", "incoming", "both"],
+                                "default": "both"
+                            },
+                        },
+                        "required": ["node_id"],
+                    },
+                ),
+                types.Tool(
                     name="get_node_details",
-                    description=(
-                        "Get detailed information about a specific class/interface node. "
-                        "Returns the complete JSON representation including type, name, "
-                        "methods, params (fields), and description."
-                    ),
+                    description="Get type + methods for nodes. No description field.",
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "node_id": {
-                                "type": "string",
-                                "description": "Fully qualified class name (e.g., 'org.example.MyClass')",
+                            "node_ids": {
+                                "type": "array",
+                                "items": {"type": "string"}
                             }
                         },
-                        "required": ["node_id"],
+                        "required": ["node_ids"],
                     },
                 ),
                 types.Tool(
-                    name="get_neighbors",
-                    description=(
-                        "Get neighbors of a node in the graph. Returns separate lists for "
-                        "incoming and outgoing edges, each with target node_id and edge type. "
-                        "Edge types: 'Inheritance' (A inherits from B), 'Dependency' (A uses B), "
-                        "'Association' (A has B as field/parameter)."
-                    ),
+                    name="mark_final_statuses",
+                    description="Mark final statuses for ALL nodes in working graph. Call this once when ready to finish.",
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "node_id": {
-                                "type": "string",
-                                "description": "Fully qualified class name",
+                            "required_node_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Core nodes answering the query"
                             },
-                            "edge_type": {
-                                "type": "string",
-                                "description": "Optional filter: 'Inheritance', 'Dependency', or 'Association'",
+                            "useful_node_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Supporting nodes providing context"
                             },
-                        },
-                        "required": ["node_id"],
-                    },
-                ),
-                types.Tool(
-                    name="get_edge_details",
-                    description=(
-                        "Get information about the edge between two nodes. "
-                        "Returns edge type and direction."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source_id": {
-                                "type": "string",
-                                "description": "Source node_id",
-                            },
-                            "target_id": {
-                                "type": "string",
-                                "description": "Target node_id",
-                            },
-                        },
-                        "required": ["source_id", "target_id"],
-                    },
-                ),
-                types.Tool(
-                    name="search_nodes",
-                    description=(
-                        "Search for nodes by name pattern (case-insensitive substring match). "
-                        "Returns list of matching node_ids."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "pattern": {
-                                "type": "string",
-                                "description": "Search pattern (substring, case-insensitive)",
+                            "irrelevant_node_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Nodes that turned out to be irrelevant (will be excluded from result)",
+                                "default": []
                             }
                         },
-                        "required": ["pattern"],
+                        "required": ["required_node_ids", "useful_node_ids"],
                     },
+                ),
+                types.Tool(
+                    name="get_working_graph",
+                    description="See current working graph node list.",
+                    inputSchema={"type": "object", "properties": {}},
                 ),
             ]
 
         @self.server.call_tool()
-        async def handle_call_tool(
-            name: str, arguments: dict | None
-        ) -> list[types.TextContent]:
-            """Handle tool calls."""
-            if arguments is None:
-                arguments = {}
-
-            if name == "get_node_details":
-                return await self._get_node_details(arguments)
-            elif name == "get_neighbors":
-                return await self._get_neighbors(arguments)
-            elif name == "get_edge_details":
-                return await self._get_edge_details(arguments)
-            elif name == "search_nodes":
-                return await self._search_nodes(arguments)
+        async def handle_call_tool(name: str, arguments: dict | None) -> list[types.TextContent]:
+            args = arguments or {}
+            
+            if name == "add_nodes":
+                return await self._add_nodes(args)
+            elif name == "preview_neighbors":
+                return await self._preview_neighbors(args)
+            elif name == "get_node_details":
+                return await self._get_node_details(args)
+            elif name == "mark_final_statuses":
+                return await self._mark_final_statuses(args)
+            elif name == "get_working_graph":
+                return await self._get_working_graph(args)
             else:
                 raise ValueError(f"Unknown tool: {name}")
 
-    async def _get_node_details(self, args: dict) -> list[types.TextContent]:
-        """Get complete node information."""
+    async def _preview_neighbors(self, args: dict) -> list[types.TextContent]:
         node_id = args["node_id"]
-        node = self.nodes_by_id.get(node_id)
-        
-        if node is None:
-            return [
-                types.TextContent(
-                    type="text",
-                    text=json.dumps({"error": f"Node not found: {node_id}"}),
-                )
-            ]
-        
-        return [
-            types.TextContent(
-                type="text",
-                text=json.dumps(node, indent=2),
-            )
-        ]
-
-    async def _get_neighbors(self, args: dict) -> list[types.TextContent]:
-        """Get neighbors with edge types and directions."""
-        node_id = args["node_id"]
-        edge_type_filter = args.get("edge_type")
+        direction = args.get("direction", "both")
         
         if node_id not in self.nodes_by_id:
-            return [
-                types.TextContent(
-                    type="text",
-                    text=json.dumps({"error": f"Node not found: {node_id}"}),
-                )
+            return [types.TextContent(type="text", text=json.dumps({"error": f"Node not found: {node_id}"}))]
+        
+        result = {"node_id": node_id, "neighbors": {}}
+        
+        if direction in ("outgoing", "both"):
+            neighbors = self.outgoing.get(node_id, [])
+            result["neighbors"]["outgoing"] = [
+                {"node_id": tgt, "edge_type": etype} 
+                for tgt, etype in sorted(neighbors) # [:MAX_PREVIEW_NEIGHBORS]
             ]
         
-        # Outgoing edges: node_id -> target
-        outgoing_edges = []
-        for target, edge_type in self.outgoing.get(node_id, []):
-            if edge_type_filter is None or edge_type == edge_type_filter:
-                outgoing_edges.append({"node_id": target, "edge_type": edge_type})
-        
-        # Incoming edges: source -> node_id
-        incoming_edges = []
-        for source, edge_type in self.incoming.get(node_id, []):
-            if edge_type_filter is None or edge_type == edge_type_filter:
-                incoming_edges.append({"node_id": source, "edge_type": edge_type})
-        
-        result = {
-            "node_id": node_id,
-            "outgoing": outgoing_edges,
-            "incoming": incoming_edges,
-        }
-        
-        return [
-            types.TextContent(
-                type="text",
-                text=json.dumps(result, indent=2),
-            )
-        ]
-
-    async def _get_edge_details(self, args: dict) -> list[types.TextContent]:
-        """Get edge information between two nodes."""
-        source_id = args["source_id"]
-        target_id = args["target_id"]
-        
-        # Find edge from source to target
-        edge_type = None
-        for tgt, etype in self.outgoing.get(source_id, []):
-            if tgt == target_id:
-                edge_type = etype
-                break
-        
-        if edge_type is None:
-            return [
-                types.TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "error": f"No edge found from {source_id} to {target_id}"
-                    }),
-                )
+        if direction in ("incoming", "both"):
+            neighbors = self.incoming.get(node_id, [])
+            result["neighbors"]["incoming"] = [
+                {"node_id": src, "edge_type": etype} 
+                for src, etype in sorted(neighbors) # [:MAX_PREVIEW_NEIGHBORS]
             ]
         
-        result = {
-            "source_id": source_id,
-            "target_id": target_id,
-            "edge_type": edge_type,
-            "direction": "outgoing",
-        }
-        
-        return [
-            types.TextContent(
-                type="text",
-                text=json.dumps(result, indent=2),
-            )
-        ]
+        return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
-    async def _search_nodes(self, args: dict) -> list[types.TextContent]:
-        """Search nodes by name pattern."""
-        pattern = args["pattern"].lower()
+    async def _add_nodes(self, args: dict) -> list[types.TextContent]:
+        node_ids = args["node_ids"]
         
-        matching_ids = [
-            node_id
-            for node_id in self.nodes_by_id
-            if pattern in node_id.lower()
-        ]
+        added = []
+        not_found = []
+        already_present = []
         
-        result = {
-            "pattern": args["pattern"],
-            "matches": matching_ids,
-            "count": len(matching_ids),
-        }
+        for nid in node_ids:
+            if nid not in self.nodes_by_id:
+                not_found.append(nid)
+            elif nid in self.working_nodes:
+                already_present.append(nid)
+            else:
+                self.working_nodes.add(nid)
+                added.append(nid)
         
-        return [
-            types.TextContent(
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "added": added,
+                "already_present": already_present,
+                "not_found": not_found,
+                "working_graph_size": len(self.working_nodes)
+            })
+        )]
+
+    async def _get_node_details(self, args: dict) -> list[types.TextContent]:
+        node_ids = args["node_ids"]
+        nodes = []
+        
+        for nid in node_ids:
+            node = self.nodes_by_id.get(nid)
+            if node:
+                # Return type + methods only (no description)
+                nodes.append({
+                    "node_id": node["node_id"],
+                    "type": node["type"],
+                    "methods": node.get("methods", [])
+                })
+        
+        return [types.TextContent(type="text", text=json.dumps({"nodes": nodes}, indent=2))]
+
+    async def _mark_final_statuses(self, args: dict) -> list[types.TextContent]:
+        required = set(args["required_node_ids"])
+        useful = set(args["useful_node_ids"])
+        irrelevant = set(args.get("irrelevant_node_ids", []))
+        
+        # Validate all marked nodes are in working graph
+        all_marked = required | useful | irrelevant
+        not_in_working = []
+        for nid in all_marked:
+            if nid not in self.working_nodes:
+                not_in_working.append(nid)
+        
+        if not_in_working:
+            return [types.TextContent(
                 type="text",
-                text=json.dumps(result, indent=2),
-            )
-        ]
+                text=json.dumps({
+                    "error": "Some nodes not in working graph",
+                    "not_in_working_graph": not_in_working
+                })
+            )]
+        
+        # Check all working nodes are marked
+        unmarked = self.working_nodes - all_marked
+        if unmarked:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "error": "Some working nodes not marked",
+                    "unmarked_nodes": list(unmarked),
+                    "hint": "All nodes must be marked as required, useful, or irrelevant"
+                })
+            )]
+        
+        # Build final result (exclude irrelevant)
+        final_nodes = required | useful
+        nodes = [self.nodes_by_id[nid] for nid in final_nodes]
+        edges = []
+        for edge in self.full_graph["edges"]:
+            if edge["node_id_from"] in final_nodes and edge["node_id_to"] in final_nodes:
+                edges.append(edge)
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "nodes": nodes,
+                "edges": edges,
+                "required_node_ids": list(required),
+                "useful_node_ids": list(useful)
+            }, indent=2)
+        )]
+
+    async def _get_working_graph(self, args: dict) -> list[types.TextContent]:
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "node_ids": list(self.working_nodes),
+                "total_nodes": len(self.working_nodes)
+            }, indent=2)
+        )]
 
     async def run(self):
-        """Run the MCP server on stdio."""
         async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
             await self.server.run(
                 read_stream,
@@ -277,45 +280,22 @@ class GraphNavigationServer:
             )
 
 
-def create_server(graph_data: dict[str, Any]) -> GraphNavigationServer:
-    """Create MCP server instance for graph navigation.
+async def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo-path", required=True, help="Path to normalized diagram JSON")
+    args = parser.parse_args()
     
-    Args:
-        graph_data: Dict with 'nodes' and 'edges' from normalized diagram JSON
-        
-    Returns:
-        GraphNavigationServer instance ready to run
-    """
-    return GraphNavigationServer(graph_data)
-
-
-async def run_server(graph_data: dict[str, Any]):
-    """Run MCP server for graph navigation.
+    graph_path = Path(args.repo_path)
+    if not graph_path.exists():
+        print(f"ERROR: Graph file not found: {graph_path}", file=sys.stderr)
+        sys.exit(1)
     
-    This is the main entry point for starting the server process.
+    with open(graph_path) as f:
+        graph_data = json.load(f)
     
-    Args:
-        graph_data: Dict with 'nodes' and 'edges' from normalized diagram JSON
-    """
-    server = create_server(graph_data)
+    server = GraphNavigationServer(graph_data)
     await server.run()
 
 
 if __name__ == "__main__":
-    # For testing: load a sample graph and run server
-    import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="MCP server for UML diagram graph navigation"
-    )
-    parser.add_argument(
-        "--diagram_path",
-        type=str,
-        help="Path to normalized diagram JSON file",
-    )
-    args = parser.parse_args()
-    
-    with open(args.diagram_path, "r") as f:
-        graph_data = json.load(f)
-    
-    asyncio.run(run_server(graph_data))
+    asyncio.run(main())

@@ -97,86 +97,41 @@ def prepare_graph(repo: str) -> None:
 
 
 def build_prompt(query: str, anchors: list[str]) -> str:
-    """Сформировать промпт из шаблонов.
-    
-    Args:
-        query: Пользовательский запрос
-        anchors: Список anchor классов
-        
-    Returns:
-        Полный промпт для OpenCode
-    """
+    """Сформировать промпт из шаблонов."""
     prompts_dir = SCRIPT_DIR / "prompts"
-    
-    # Загрузить шаблоны
     system_prompt = (prompts_dir / "agent_system.txt").read_text()
     user_template = (prompts_dir / "agent_user.txt").read_text()
     
-    # Заполнить user prompt
     user_prompt = user_template.format(
         query=query,
         anchors=json.dumps(anchors, indent=2),
-        # max_steps=40  # Хардкодим max_steps, можно вынести в config # Указываем в промте
     )
     
-    # Объединить system + user
-    full_prompt = f"{system_prompt}\n\n{user_prompt}\n\n"
-    
-    # Добавить инструкцию для вывода JSON
-    full_prompt += """
-CRITICAL: When you have finished exploring the graph, you MUST output your final answer as valid JSON in this EXACT format:
-
-```json
-{
-  "required": ["fully.qualified.ClassName1", "fully.qualified.ClassName2"],
-  "useful": ["fully.qualified.ClassName3", "fully.qualified.ClassName4"]
-}
-```
-
-Do NOT include any explanations before or after the JSON. Just output the JSON block.
-"""
-    
-    return full_prompt
+    return f"{system_prompt}\n\n{user_prompt}"
 
 
 def parse_json_from_output(output: str) -> dict | None:
-    """Извлечь JSON из вывода OpenCode.
+    """Извлечь JSON из вывода OpenCode (ищет required/useful)."""
+    patterns = [
+        r'```json\s*(\{[^`]+\})\s*```',  # Markdown блок
+        r'\{[^{}]*"required_node_ids"[^{}]*"useful_node_ids"[^{}]*\}',  # get_final_result format
+        r'\{[^{}]*"required"[^{}]*"useful"[^{}]*\}',  # Simple format
+    ]
     
-    Args:
-        output: Полный вывод OpenCode (stdout)
-        
-    Returns:
-        Dict с required/useful или None если не найдено
-    """
-    # Попытка 1: Найти JSON блок в markdown (```json ... ```)
-    json_block_pattern = r'```json\s*(\{[^`]+\})\s*```'
-    match = re.search(json_block_pattern, output, re.DOTALL)
-    
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            pass
-    
-    # Попытка 2: Найти голый JSON объект с required/useful
-    json_pattern = r'\{[^{}]*"required"[^{}]*"useful"[^{}]*\}'
-    match = re.search(json_pattern, output, re.DOTALL)
-    
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
-    
-    # Попытка 3: Многострочный JSON (с вложенными {})
-    json_multiline_pattern = r'\{(?:[^{}]|\{[^{}]*\})*"required"(?:[^{}]|\{[^{}]*\})*"useful"(?:[^{}]|\{[^{}]*\})*\}'
-    match = re.search(json_multiline_pattern, output, re.DOTALL)
-    
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
+    for pattern in patterns:
+        match = re.search(pattern, output, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group(1) if '```' in pattern else match.group(0))
+                # Normalize: get_final_result returns required_node_ids/useful_node_ids
+                if "required_node_ids" in data:
+                    return {
+                        "required": data["required_node_ids"],
+                        "useful": data["useful_node_ids"]
+                    }
+                return data
+            except (json.JSONDecodeError, IndexError):
+                continue
     
     return None
 

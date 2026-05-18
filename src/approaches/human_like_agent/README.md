@@ -1,368 +1,135 @@
-# Human-Like Agent Approach
+# Human-Like Agent: Incremental Graph Building
 
-Agent-based UML diagram exploration using MCP (Model Context Protocol) tools for graph navigation.
+Minimal agent-based approach where LLM builds a working graph step-by-step.
 
-## Overview
+## Core Idea
 
-The `human_like_agent` approach simulates how a human software architect would explore a class diagram to answer a query:
+The agent starts with one anchor and incrementally adds nodes to a working graph (max 30 nodes):
 
-1. **Start with anchor classes** (from `anchor_neighbors` stage 2)
-2. **Inspect each anchor** to understand its structure (methods, fields, relationships)
-3. **Explore neighbors** by following edges (inheritance, dependencies, associations)
-4. **Make decisions** about which classes are relevant:
-   - `required`: Core classes directly answering the query
-   - `useful`: Supporting classes providing context (interfaces, base classes, key dependencies)
+1. **Pick anchor** → `add_nodes([anchor_id])`
+2. **Preview neighbors** → See IDs + edge types (cheap)
+3. **Add selected** → Only promising nodes enter working graph
+4. **Mark status** → unrecognized → useful/required
+5. **Repeat** until query answered
+6. **Get result** → Returns required + useful nodes
 
-Unlike batch approaches that process the entire graph at once, the agent **interactively navigates** the graph using tools, mimicking human exploration patterns.
+## MCP Tools (6 tools)
 
-## Architecture
+### 1. `add_nodes([node_ids], status?)`
+Add nodes to working graph. Use this to start with anchor or add neighbors. Enforces 30-node limit.
 
-**Important:** One MCP server per sample (repo + query). Each sample gets a fresh server instance.
+### 2. `preview_neighbors(node_id, direction?)`
+See neighbors WITHOUT adding to working graph. Returns only node IDs + edge types (~50 tokens).
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  HumanLikeAgentRunner                       │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  For EACH sample:                                     │  │
-│  │  1. Load anchors from data/stage2_anchors/           │  │
-│  │  2. Load graph from data/diagrams_normalized/        │  │
-│  │  3. Start NEW MCP server as subprocess               │  │
-│  │  4. Run LLM agent with tools (OpenAI function calling)│  │
-│  │  5. Terminate server, cleanup temp file              │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-                           │
-                           │ stdio communication (JSON-RPC)
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│          MCP Server (subprocess, one per sample)            │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  Tools:                                               │  │
-│  │  • get_node_details(node_id)                         │  │
-│  │  • get_neighbors(node_id, edge_type?)                │  │
-│  │  • get_edge_details(source_id, target_id)            │  │
-│  │  • search_nodes(pattern)                             │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                             │
-│  Graph loaded in memory for THIS sample:                   │
-│  • nodes_by_id = {node_id: node_data}                      │
-│  • outgoing = {node_id: [(target, edge_type), ...]}        │
-│  • incoming = {node_id: [(source, edge_type), ...]}        │
-└─────────────────────────────────────────────────────────────┘
-
-Lifecycle:
-  Sample 1 (hadoop) → MCP Server #1 → Agent explores → Server terminates
-  Sample 2 (flink)  → MCP Server #2 → Agent explores → Server terminates
-  
-No state is shared between samples (full isolation).
-```
-
-## MCP Tools
-
-The agent has access to 4 tools for exploring the class diagram:
-
-### 1. `get_node_details(node_id)`
-Get complete information about a class:
+**Example:**
 ```json
 {
-  "type": "class",
-  "name": "org.example.MyClass",
-  "node_id": "org.example.MyClass",
-  "methods": [
-    "public void doSomething(String arg)",
-    "private int calculate()"
-  ],
-  "params": [
-    "private Logger log",
-    "private Service service"
-  ],
-  "description": ""
+  "neighbors": {
+    "outgoing": [
+      {"node_id": "Path", "edge_type": "Association"},
+      {"node_id": "Config", "edge_type": "Dependency"}
+    ]
+  }
 }
 ```
 
-### 2. `get_neighbors(node_id, edge_type?)`
-Get neighboring classes with relationship types:
-```json
-{
-  "node_id": "org.example.MyClass",
-  "outgoing": [
-    {"node_id": "org.example.Service", "edge_type": "Association"},
-    {"node_id": "org.example.BaseClass", "edge_type": "Inheritance"}
-  ],
-  "incoming": [
-    {"node_id": "org.example.Controller", "edge_type": "Dependency"}
-  ]
-}
-```
+### 3. `get_node_details([node_ids])`
+Get type + methods for nodes. No description field.
 
-**Edge semantics:**
-- **Inheritance** (`A -> B`): A inherits from B (extends/implements)
-- **Dependency** (`A -> B`): A uses B (local variable, parameter, return type)
-- **Association** (`A -> B`): A has B (field, parameter, generic type parameter)
+### 4. `mark_status([node_ids], status)`
+Mark as "unrecognized", "useful", or "required".
 
-### 3. `get_edge_details(source_id, target_id)`
-Get specific edge information:
-```json
-{
-  "source_id": "org.example.MyClass",
-  "target_id": "org.example.BaseClass",
-  "edge_type": "Inheritance",
-  "direction": "outgoing"
-}
-```
+### 5. `get_working_graph(verbose?)`
+Check current state.
 
-### 4. `search_nodes(pattern)`
-Search for classes by name (case-insensitive):
-```json
-{
-  "pattern": "Controller",
-  "matches": [
-    "org.example.UserController",
-    "org.example.AdminController"
-  ],
-  "count": 2
-}
-```
+### 6. `get_final_result()`
+Return pruned diagram. All nodes must be marked (no unrecognized).
 
 ## Configuration
 
-Add to `configs/config.yaml`:
+In `configs/config.yaml`:
 
 ```yaml
 approaches:
   human_like_agent:
-    # Maximum number of tool calls (to control API costs)
-    max_steps: 40
-    # Output directories
+    max_steps: 40              # Tool call limit
     outputs_dir: "data/results/human_like_agent"
     llm_traces_dir: "data/llm_traces/human_like_agent"
 ```
 
+MCP server uses `--max-graph-size 30` (see `opencode.json`).
+
 ## Usage
 
-### Prerequisites
-
-1. **Install MCP dependencies:**
-   ```bash
-   pip install -r requirements-mcp.txt
-   ```
-
-2. **Generate anchor classes** (run `anchor_neighbors` stage 1-2):
-   ```bash
-   python scripts/run.py --approach anchor_neighbors --limit 5
-   ```
-   This creates `data/stage2_anchors/<repo>__<sample_id>.json`
-
-### Running
-
-**Via dedicated CLI (recommended):**
 ```bash
-# Basic run
+# Run on 1 sample
 python src/approaches/human_like_agent/run.py --limit 1
 
-# Specific repository
+# Specific repo
 python src/approaches/human_like_agent/run.py --repo apache/hadoop
 
-# With evaluation
-python src/approaches/human_like_agent/run.py --repo apache/flink --eval
-
-# Debug specific query
-python src/approaches/human_like_agent/run.py \
-    --repo apache/hadoop \
-    --query "Show file system classes" \
-    --verbose
-```
-
-**Programmatic usage (for OpenCode dialog or scripts):**
-```python
-from src.approaches.human_like_agent.runner import HumanLikeAgentRunner
-from src.approaches.human_like_agent.settings import load_settings, make_llm_client
-from src.core.config import load_config
-
-cfg = load_config("configs/config.yaml")
-settings = load_settings(cfg)
-llm = make_llm_client(settings.llm)
-runner = HumanLikeAgentRunner(settings, llm)
-
-sample = {
-    "sample_id": "abc123",
-    "repo": "apache/hadoop",
-    "query": "Show file system classes"
-}
-
-result = await runner.run_async(sample)
-# → {"required": [...], "useful": [...]}
-```
-
-### Output
-
-Results are written to `data/results/human_like_agent/`:
-
-```
-data/results/human_like_agent/
-├── <repo>__<sample_id>.json       # Per-sample results
-└── evaluation_report.json          # Aggregate metrics (if --eval)
-```
-
-**Per-sample output format:**
-```json
-{
-  "required": [
-    "org.example.CoreClass1",
-    "org.example.CoreClass2"
-  ],
-  "useful": [
-    "org.example.BaseInterface",
-    "org.example.HelperClass"
-  ]
-}
+# Via generic runner
+python scripts/run.py --approach human_like_agent --limit 5
 ```
 
 ## How It Works
 
-### Agent Loop
-
-1. **Initialization:**
-   - Load anchor classes from `data/stage2_anchors/`
-   - Load full graph from `data/diagrams_normalized/`
-   - Start MCP server as subprocess
-
-2. **Agent Exploration** (up to `max_steps` tool calls):
-   ```
-   Agent receives:
-     - System prompt with tool descriptions
-     - User query
-     - List of anchor classes
-   
-   Agent loop:
-     while steps < max_steps:
-       1. Agent decides which tool to call
-       2. MCP server executes tool on graph
-       3. Result is returned to agent
-       4. Agent updates its understanding
-       5. Repeat or return final answer
-   ```
-
-3. **Final Answer:**
-   ```json
-   {
-     "required": ["ClassName1", "ClassName2", ...],
-     "useful": ["ClassName3", "ClassName4", ...]
-   }
-   ```
-
-### Example Agent Trace
-
 ```
-[Step 1] get_node_details("org.example.UserService")
-  → Returns: methods, fields, type
-
-[Step 2] get_neighbors("org.example.UserService")
-  → Returns: outgoing=[UserRepository, User], incoming=[UserController]
-
-[Step 3] get_node_details("org.example.UserRepository")
-  → Returns: methods, fields, type
-
-[Step 4] get_neighbors("org.example.UserRepository", "Inheritance")
-  → Returns: outgoing=[BaseRepository]
-
-[Step 5] Returns final JSON:
-  {
-    "required": ["org.example.UserService", "org.example.UserRepository"],
-    "useful": ["org.example.User", "org.example.BaseRepository"]
-  }
+Agent receives: query + anchors
+  ↓
+add_nodes([anchor1])  # Start with one anchor
+  ↓
+Loop:
+  preview_neighbors(node_id) → [A, B, C, ...]
+  add_nodes([A, C])           # Skip B (looks irrelevant)
+  get_node_details([A, C])    # Get methods
+  mark_status([A], "required")
+  mark_status([C], "useful")
+  ↓
+get_final_result()
+  → {required: [...], useful: [...]}
 ```
 
-## Prompts
+## Key Constraints
 
-Located in `src/approaches/human_like_agent/prompts/`:
+- **30 nodes max** in working graph
+- **All nodes must be marked** before `get_final_result()`
+- **No description field** — judge by name + methods only
+- **~40 tool calls** budget
 
-- **`agent_system.txt`**: Agent instructions, tool descriptions, edge semantics, output format
-- **`agent_user.txt`**: Per-query template with anchors and max_steps reminder
+## Example Session
 
-Key instructions:
-- Start with anchor classes
-- Explore neighbors efficiently (budget = `max_steps` tool calls)
-- Classify classes as `required` (core) vs `useful` (supporting)
-- Return valid JSON only
-
-## Cost Control
-
-**Important:** LLM function calling can be expensive. The `max_steps` parameter is a **hard limit** to prevent runaway costs.
-
-Typical values:
-- `max_steps: 20` — Quick exploration (5-10 classes)
-- `max_steps: 40` — Medium exploration (default, 10-20 classes)
-- `max_steps: 100` — Deep exploration (20+ classes, expensive)
-
-**Monitoring:**
-- Each tool call consumes 1 step
-- Agent stops automatically at `max_steps`
-- Check LLM traces in `data/llm_traces/human_like_agent/`
-
-## Comparison with Other Approaches
-
-| Approach | Strategy | Pros | Cons |
-|----------|----------|------|------|
-| `anchor_neighbors` | Batch: anchor + 1-hop neighbors → LLM prune | Fast, predictable cost | Limited to 1-hop, no adaptive exploration |
-| `rag_classes_filter` | Batch: RAG top-K → LLM filter | Simple, no graph structure | Misses structural relationships |
-| **`human_like_agent`** | **Interactive: agent navigates graph with tools** | **Human-like exploration, adaptive depth** | **Higher cost, variable steps** |
-
-## Dependencies
-
-**Core (already in requirements.txt):**
-- `openai>=1.30.0` (for LLM with function calling)
-- Standard project dependencies
-
-**MCP (install separately):**
-```bash
-pip install -r requirements-mcp.txt
 ```
-
-Or manually:
-```bash
-pip install mcp>=0.9.0
+[1] add_nodes(["FileSystem"]) → Working: 1 node
+[2] preview_neighbors("FileSystem") → See 47 neighbors
+[3] add_nodes(["Path", "Config"]) → Working: 3 nodes
+[4] get_node_details(["Path"]) → See methods
+[5] mark_status(["Path"], "required")
+[6] mark_status(["FileSystem"], "required")
+[7] mark_status(["Config"], "useful")
+[8] preview_neighbors("Path") → See 15 neighbors
+... (continue until query answered)
+[20] get_final_result() → {required: [...], useful: [...]}
 ```
 
 ## Troubleshooting
 
-### "No anchors found"
-Run `anchor_neighbors` stage 1-2 first:
+**"Working graph size limit exceeded"**
+→ Tried to add too many nodes. Be more selective (max 30 nodes).
+
+**"Cannot generate result: unrecognized nodes present"**
+→ Call `mark_status()` for all nodes before `get_final_result()`.
+
+**No anchors found**
+→ Run `anchor_neighbors` first to generate anchors:
 ```bash
-python scripts/run.py --approach anchor_neighbors
+python scripts/run.py --approach anchor_neighbors --limit 1
 ```
 
-### MCP import error
-Install MCP dependencies:
-```bash
-pip install -r requirements-mcp.txt
-```
+## Design Philosophy
 
-### Agent hits max_steps
-Increase `max_steps` in `configs/config.yaml`:
-```yaml
-approaches:
-  human_like_agent:
-    max_steps: 60  # or higher
-```
-
-### Diagram not found
-Ensure diagrams are normalized:
-```bash
-python scripts/normalize_diagrams.py
-```
-
-## Future Improvements
-
-Potential enhancements:
-- **Graph metrics tools**: betweenness centrality, PageRank
-- **Multi-hop path finding**: find path between two classes
-- **Code context**: integrate source code snippets
-- **Caching**: reuse exploration results across similar queries
-- **Budget allocation**: dynamic step budgets based on query complexity
-
-## See Also
-
-- `src/approaches/anchor_neighbors/` — Batch approach with anchor + neighbors
-- `scripts/run.py` — Generic approach runner
-- `configs/config.yaml` — Configuration reference
+- **Minimal code**: ~330 lines MCP server, simple prompts
+- **6 tools only**: No redundant operations
+- **Stateful memory**: Server tracks working graph
+- **Incremental**: Preview → Select → Add (not "expand all neighbors")
+- **Controlled context**: Only selected nodes enter LLM context

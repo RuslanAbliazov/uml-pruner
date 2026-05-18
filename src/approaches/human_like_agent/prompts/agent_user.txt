@@ -1,20 +1,33 @@
-USER QUERY:
+═══════════════════════════════════════════════════════════════════════════════
+USER QUERY
+═══════════════════════════════════════════════════════════════════════════════
+
 {query}
 
-ANCHOR CLASSES (your starting points):
+═══════════════════════════════════════════════════════════════════════════════
+ANCHOR CLASSES (pick the BEST one based on query terms)
+═══════════════════════════════════════════════════════════════════════════════
+
 {anchors}
 
-Your task: Explore the class diagram starting from these anchor classes and identify all classes relevant to answering the user's query.
+═══════════════════════════════════════════════════════════════════════════════
+YOUR MISSION
+═══════════════════════════════════════════════════════════════════════════════
 
-**Guidelines:**
-1. Read the query carefully. Identify key entities, processes, and dependencies.
-2. Quickly inspect the anchors (using `get_node_details`), pick the most relevant ones.
-3. Traverse from them following relationships, aggressively filtering out everything unrelated.
-4. Stop as soon as the picture becomes clear enough to answer the query.
-5. Return JSON with full class names.
+Find ALL classes needed to answer this query with MAXIMUM PRECISION.
 
-Remember:
-- Return JSON with "required" and "useful" lists when done
-- Use full class names (node_id) in your response
+**Execute the 4-phase strategy from system prompt:**
 
-Begin your exploration!
+Phase 1: ANALYZE query → Extract key terms → Pick best anchor
+Phase 2: EXPLORE depth-first → Add ONE node at a time → Score neighbors → Inspect → Add
+Phase 3: STOP at ~20 nodes OR when all relevant neighbors exhausted
+Phase 4: CATEGORIZE all nodes → mark_final_statuses(required=[...], useful=[...], irrelevant=[...])
+
+**Remember:**
+- ONE node per add_nodes call (depth-first!)
+- Compare EVERY class name/method/param to query terms
+- Inheritance > Association > Dependency
+- Skip JDK classes (java.*, javax.*)
+- Stop at ~20 nodes
+
+BEGIN!
