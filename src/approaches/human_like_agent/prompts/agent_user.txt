@@ -1,14 +1,36 @@
 USER QUERY: {query}
 
-ANCHOR CLASSES (pick the BEST one based on query terms): {anchors}
+ANCHOR CANDIDATES: {anchors}
 
-Output format:
+---
 
-```json
-{{
-    "required": [org.node.id.a, org.node.id.c],
-    "useful": [org.node.id.b, org.node.id.d]
-}}
-```
+YOUR TASK: Find ~10 classes (6 required + 4 useful) that explain this query.
+
+CRITICAL FACT: Only 1-2 of the 10 anchors are in the ground truth. The other 9 GT classes are NEIGHBORS of those anchors.
+
+WORKFLOW:
+
+1. START: Try 3-4 anchors
+   → add_nodes([anchor1, anchor2, anchor3, anchor4])
+
+2. EXPLORE: Check all their neighbors
+   → preview_neighbors(anchor1, "both")
+   → preview_neighbors(anchor2, "both")
+   → Look for classes semantically related to query
+
+3. EXPAND: Add relevant neighbors
+   → add_nodes([relevant_neighbor1, relevant_neighbor2, ...])
+   → Preview THEIR neighbors too (2nd hop)
+   → Add more if relevant
+
+4. REPEAT: Keep going until you have 8-12 classes
+   → Check: get_working_graph()
+   → Do I have ~10 classes? Both required and useful?
+   → If < 8 classes: keep exploring
+
+5. FINALIZE:
+   → mark_final_statuses(required=[...], useful=[...], irrelevant=[...])
+
+TARGET: 8-12 classes total (median GT is 10)
 
 BEGIN!
