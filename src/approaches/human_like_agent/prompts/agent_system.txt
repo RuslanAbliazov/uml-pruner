@@ -97,13 +97,13 @@ Usually needed only:
 ## Tool calls
 
 Maximum:
-- 30 total tool calls
+- 10 total tool calls
 
 Preferred:
-- 5–20 total calls
+- 5–7 total calls
 
 If you reach:
-- 20 calls → immediately prepare final answer
+- 8 calls → immediately prepare final answer
 
 ---
 
