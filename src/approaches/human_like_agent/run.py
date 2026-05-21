@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -110,75 +109,147 @@ def build_prompt(query: str, anchors: list[str]) -> str:
     return f"{system_prompt}\n\n{user_prompt}"
 
 
-def parse_json_from_output(output: str) -> dict | None:
-    """Извлечь JSON из вывода OpenCode (ищет required/useful)."""
-    patterns = [
-        r'```json\s*(\{[^`]+\})\s*```',  # Markdown блок
-        r'\{[^{}]*"required_node_ids"[^{}]*"useful_node_ids"[^{}]*\}',  # get_final_result format
-        r'\{[^{}]*"required"[^{}]*"useful"[^{}]*\}',  # Simple format
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, output, re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group(1) if '```' in pattern else match.group(0))
-                # Normalize: get_final_result returns required_node_ids/useful_node_ids
-                if "required_node_ids" in data:
-                    return {
-                        "required": data["required_node_ids"],
-                        "useful": data["useful_node_ids"]
-                    }
-                return data
-            except (json.JSONDecodeError, IndexError):
-                continue
-    
+FINAL_TOOL_NAME = "mark_final_statuses"
+
+
+def _extract_tool_output(state_output: object) -> str | None:
+    """Извлечь строку вывода MCP-инструмента из поля state.output.
+
+    OpenCode сохраняет вывод MCP-инструмента как строку (TextContent от MCP-сервера).
+    На некоторых версиях вывод может прийти как список объектов TextContent —
+    обрабатываем оба варианта.
+    """
+    if isinstance(state_output, str):
+        return state_output
+    if isinstance(state_output, list):
+        # Список TextContent-объектов: [{"type": "text", "text": "..."}]
+        parts = []
+        for item in state_output:
+            if isinstance(item, dict) and "text" in item:
+                parts.append(item["text"])
+            elif isinstance(item, str):
+                parts.append(item)
+        if parts:
+            return "".join(parts)
     return None
+
+
+def parse_final_result_from_events(output: str) -> dict | None:
+    """Извлечь результат mark_final_statuses из потока JSON-событий OpenCode.
+
+    Ожидается вывод `opencode run ... --format json`: одно JSON-событие на строку.
+    Ищется последнее завершённое событие tool_use с tool == mark_final_statuses
+    (имя может иметь префикс MCP-сервера, например graph-navigator_mark_final_statuses).
+
+    Args:
+        output: stdout от `opencode run --format json`
+
+    Returns:
+        dict с ключами required/useful или None если событие не найдено
+    """
+    last_result: dict | None = None
+
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            # Не каждая строка должна быть валидным JSON (на всякий случай)
+            continue
+
+        if event.get("type") != "tool_use":
+            continue
+
+        part = event.get("part") or {}
+        tool_name = part.get("tool") or ""
+        # Имя MCP-инструмента может быть с префиксом сервера, поэтому endswith
+        if not tool_name.endswith(FINAL_TOOL_NAME):
+            continue
+
+        state = part.get("state") or {}
+        if state.get("status") != "completed":
+            continue
+
+        tool_output_str = _extract_tool_output(state.get("output"))
+        if not tool_output_str:
+            continue
+
+        try:
+            tool_payload = json.loads(tool_output_str)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(tool_payload, dict):
+            continue
+
+        # Игнорируем ошибки MCP-сервера (он возвращает {"error": ...})
+        if "error" in tool_payload:
+            continue
+
+        required = tool_payload.get("required_node_ids")
+        useful = tool_payload.get("useful_node_ids")
+        if not isinstance(required, list) or not isinstance(useful, list):
+            continue
+
+        # Берём ПОСЛЕДНИЙ успешный вызов (агент мог переделать ответ)
+        last_result = {"required": required, "useful": useful}
+
+    return last_result
 
 
 def run_opencode(prompt: str, sample_id: str) -> tuple[str, dict | None]:
     """Запустить OpenCode с промптом.
-    
+
+    Использует `--format json`: вместо парсинга текстового ответа агента
+    напрямую перехватывается результат MCP-инструмента mark_final_statuses
+    из потока структурированных событий.
+
     Args:
         prompt: Промпт для агента
         sample_id: ID сэмпла (для логирования)
-        
+
     Returns:
         Кортеж (полный_вывод, распарсенный_json или None)
     """
     print(f"  Running OpenCode agent...")
-    
-    # Запустить OpenCode из директории подхода
+
+    # Запустить OpenCode из директории подхода в json-режиме
     result = subprocess.run(
-        ["opencode", "run", prompt],
+        ["opencode", "run", prompt, "--format", "json"],
         cwd=SCRIPT_DIR,
         capture_output=True,
         text=True,
         timeout=600  # 10 минут timeout
     )
-    
+
     output = result.stdout
-    
-    # Сохранить trace
+
+    # Сохранить trace (NDJSON поток событий)
     TRACES_DIR.mkdir(parents=True, exist_ok=True)
-    trace_file = TRACES_DIR / f"{sample_id}.trace.txt"
+    trace_file = TRACES_DIR / f"{sample_id}.trace.jsonl"
     trace_file.write_text(output)
     print(f"  Trace saved: {trace_file}")
-    
+
     # Если были ошибки в stderr
     if result.stderr:
         stderr_file = TRACES_DIR / f"{sample_id}.stderr.txt"
         stderr_file.write_text(result.stderr)
         print(f"  Stderr saved: {stderr_file}")
-    
-    # Парсить JSON из вывода
-    result_json = parse_json_from_output(output)
-    
+
+    # Извлечь результат напрямую из вызова mark_final_statuses
+    result_json = parse_final_result_from_events(output)
+
     if result_json:
-        print(f"  Parsed JSON: {len(result_json.get('required', []))} required, {len(result_json.get('useful', []))} useful")
+        print(
+            f"  Parsed result: {len(result_json.get('required', []))} required, "
+            f"{len(result_json.get('useful', []))} useful"
+        )
     else:
-        print(f"  WARNING: Could not parse JSON from output")
-    
+        print(f"  WARNING: mark_final_statuses tool call not found in events")
+
     return output, result_json
 
 
