@@ -1,0 +1,31 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "myprovider": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "VseGPT",
+      "options": {
+        "baseURL": "https://api.vsegpt.ru/v1"
+      },
+      "models": {
+        "deepseek/deepseek-v3.2-alt": {
+          "name": "deepseek/deepseek-v3.2-alt"
+        },
+        "qwen/qwen3-coder-next": {
+          "name": "qwen/qwen3-coder-next"
+        }
+      }
+    }
+  },
+  "mcp": {
+    "graph-navigator": {
+      "type": "local",
+      "command": [
+      "/home/windy/query2diagram/uml-pruner/model_env/bin/python", 
+      "/home/windy/query2diagram/uml-pruner/src/approaches/human_like_agent/mcp_server.py", 
+      "--diagram_path", 
+      "/home/windy/query2diagram/uml-pruner/data/diagrams_normalized/ghidra.json"],
+      "enabled": true
+    }
+  }
+}

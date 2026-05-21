@@ -1,33 +1,14 @@
-═══════════════════════════════════════════════════════════════════════════════
-USER QUERY
-═══════════════════════════════════════════════════════════════════════════════
+USER QUERY: {query}
 
-{query}
+ANCHOR CLASSES (pick the BEST one based on query terms): {anchors}
 
-═══════════════════════════════════════════════════════════════════════════════
-ANCHOR CLASSES (pick the BEST one based on query terms)
-═══════════════════════════════════════════════════════════════════════════════
+Output format:
 
-{anchors}
-
-═══════════════════════════════════════════════════════════════════════════════
-YOUR MISSION
-═══════════════════════════════════════════════════════════════════════════════
-
-Find ALL classes needed to answer this query with MAXIMUM PRECISION.
-
-**Execute the 4-phase strategy from system prompt:**
-
-Phase 1: ANALYZE query → Extract key terms → Pick best anchor
-Phase 2: EXPLORE depth-first → Add ONE node at a time → Score neighbors → Inspect → Add
-Phase 3: STOP at ~20 nodes OR when all relevant neighbors exhausted
-Phase 4: CATEGORIZE all nodes → mark_final_statuses(required=[...], useful=[...], irrelevant=[...])
-
-**Remember:**
-- ONE node per add_nodes call (depth-first!)
-- Compare EVERY class name/method/param to query terms
-- Inheritance > Association > Dependency
-- Skip JDK classes (java.*, javax.*)
-- Stop at ~20 nodes
+```json
+{{
+    "required": [org.node.id.a, org.node.id.c],
+    "useful": [org.node.id.b, org.node.id.d]
+}}
+```
 
 BEGIN!

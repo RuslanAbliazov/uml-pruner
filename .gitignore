@@ -5,7 +5,7 @@ uml_with_methods/
 logs/
 *__pycache__
 
-opencode.json
+./opencode.json
 .DS_Store
 *.patch
 .idea

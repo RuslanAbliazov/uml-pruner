@@ -1,0 +1,74 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "YandexAIStudio": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "YandexAIStudio",
+      "options": {
+        "baseURL": "https://ai.api.cloud.yandex.net/v1",
+        "headers": {
+          "OpenAI-Project": "b1gj41bqahsmmkibdo5j"
+        }
+      },
+      "models": {
+        "deepseek-v32-latest": {
+          "name": "DeepSeek v3.2 (Yandex)",
+          "options": {
+            "model": "gpt://b1gj41bqahsmmkibdo5j/deepseek-v32/latest",
+            "reasoning_effort": "none"
+          }
+        },
+        "qwen3.6-35b-a3b-latest": {
+          "name": "Qwen3.6-35B (Yandex)",
+          "options": {
+            "model": "gpt://b1gj41bqahsmmkibdo5j/qwen3.6-35b-a3b/latest",
+            "reasoning_effort": "low"
+          }
+        }
+      }
+    },
+    "VseGPT": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "VseGPT",
+      "options": {
+        "baseURL": "https://api.vsegpt.ru/v1"
+      },
+      "models": {
+        "deepseek/deepseek-v3.2-alt": {
+          "name": "deepseek/deepseek-v3.2-alt"
+        },
+        "qwen/qwen3-coder-next": {
+          "name": "qwen/qwen3-coder-next"
+        }
+      }
+    }
+  },
+  "model": "YandexAIStudio/deepseek-v32-latest",
+  "mcp": {
+    "graph-navigator": {
+      "type": "local",
+      "command": [
+      "/home/windy/query2diagram/uml-pruner/model_env/bin/python", 
+      "/home/windy/query2diagram/uml-pruner/src/approaches/human_like_agent/mcp_server.py", 
+      "--diagram_path", 
+      "/home/windy/query2diagram/uml-pruner/src/approaches/human_like_agent/current_uml.json"],
+      "enabled": true
+    }
+  },
+  "permission": {
+    "bash": "deny",
+    "edit": "deny",
+    "write": "deny",
+    "read": "deny",
+    "grep": "deny",
+    "glob": "deny",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "skill": "deny",
+    "task": "deny",
+    "doom_loop": "deny",
+    "question": "deny",
+    "think": "deny",
+    "exit_plan_mode": "deny"
+  }
+}

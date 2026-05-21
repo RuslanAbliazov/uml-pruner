@@ -65,6 +65,7 @@ class StageMetrics:
     # из-за множества required, важно понимать, на скольких сэмплах
     # этап вообще промахнулся мимо ВСЕХ required.
     hit_any_required: bool = False
+    hit_any_required_or_useful: bool = False
     # Только для этапа anchor:
     anchor: str = ""
     anchor_in_required: bool = False
@@ -89,6 +90,7 @@ class StageMetrics:
             "predicted": self.predicted,
             "gold_all": self.gold_all,
             "hit_any_required": self.hit_any_required,
+            "hit_any_required_or_useful": self.hit_any_required_or_useful
         }
         if self.stage == StageName.ANCHOR.value:
             d.update({
@@ -153,6 +155,7 @@ def metrics_for_stage(outcome: StageOutcome, gold: GoldLabels) -> StageMetrics:
     # Если эталонных required нет вовсе — считаем флаг ложным
     # (нечего ловить → нечего фиксировать как «успех»).
     base.hit_any_required = bool(gold.required and (predicted & gold.required))
+    base.hit_any_required_or_useful = bool((gold.required or gold.useful) and (predicted & (gold.required | gold.useful)))
 
     # Спец-поля для anchor-этапа: показывают, попал ли выбранный anchor
     # в эталонные required/useful, и был ли это fallback на top-1.

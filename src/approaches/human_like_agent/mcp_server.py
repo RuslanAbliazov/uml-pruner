@@ -282,10 +282,10 @@ class GraphNavigationServer:
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo-path", required=True, help="Path to normalized diagram JSON")
+    parser.add_argument("--diagram_path", required=True, help="Path to normalized diagram JSON")
     args = parser.parse_args()
     
-    graph_path = Path(args.repo_path)
+    graph_path = Path(args.diagram_path)
     if not graph_path.exists():
         print(f"ERROR: Graph file not found: {graph_path}", file=sys.stderr)
         sys.exit(1)

@@ -24,9 +24,9 @@ from pathlib import Path
 # Определить пути относительно этого скрипта
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
-RESULTS_DIR = PROJECT_ROOT / "data" / "results" / "human_like_agent_2"
-TRACES_DIR = PROJECT_ROOT / "data" / "llm_traces" / "human_like_agent_2"
-STAGE2_ANCHORS_DIR = PROJECT_ROOT / "data" / "stage2_anchors_hashed"
+RESULTS_DIR = PROJECT_ROOT / "data" / "results" / "human_like_agent_1"
+TRACES_DIR = PROJECT_ROOT / "data" / "llm_traces" / "human_like_agent_1"
+STAGE2_ANCHORS_DIR = PROJECT_ROOT / "data" / "stage2_anchors_hashed_1"
 DIAGRAMS_DIR = PROJECT_ROOT / "data" / "diagrams_normalized"
 CURRENT_UML = SCRIPT_DIR / "current_uml.json"
 

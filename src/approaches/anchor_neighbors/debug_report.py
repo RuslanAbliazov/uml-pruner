@@ -120,6 +120,7 @@ def aggregate(reports: Iterable[SampleReport]) -> dict:
             micro_precision = sum([r["true_positive"] for r in ok_rows]) / sum([r["predicted"] for r in ok_rows])
             micro_recall = sum([r["true_positive"] for r in ok_rows]) / sum([r["gold_all"] for r in ok_rows])
             agg["n_with_any_required"] = n_hit
+            agg["n_with_any_required_or_useful"] = sum(1 for r in ok_rows if r.get("hit_any_required_or_useful"))
             agg["any_required_rate"] = round(n_hit / len(ok_rows), 4)
             agg["micro_precision"] = micro_precision
             agg["micro_recall"] = micro_recall
