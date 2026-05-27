@@ -7,7 +7,9 @@ Task:
 Classify each class in the subgraph as REQUIRED, USEFUL, or IRRELEVANT according to the rules in the system prompt.
 
 Return exactly this JSON shape:
+```json
 {{
   "required": ["full.node.id.1", "full.node.id.2"],
   "useful": ["full.node.id.3", "full.node.id.4"]
 }}
+```
