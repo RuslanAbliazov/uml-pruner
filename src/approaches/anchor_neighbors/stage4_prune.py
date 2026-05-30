@@ -1,23 +1,11 @@
-"""Этап 4 — LLM раскладывает подграф на REQUIRED / USEFUL / IRRELEVANT.
+"""Этап 4 — LLM классифицирует узлы подграфа как REQUIRED / USEFUL / IRRELEVANT.
 
-Что прокидываем модели:
-* свободный пользовательский запрос;
-* anchor — единственный класс, который изначально гарантированно релевантен;
-* список всех узлов подграфа в усечённом виде (`_node_for_llm`);
-* список рёбер подграфа в усечённом виде (`_edge_for_llm`).
+Один LLM-вызов на подграф (anchor + соседи) → {required, useful}.
 
-Что НЕ прокидываем:
-* поле `description` узла. Оно сгенерировано LLM на стадии подготовки
-  данных и часто пересекается формулировками с эталоном — это утечка.
-* полные сигнатуры (методов больше 30, параметров больше 20). Это и
-  гигиена контекстного окна, и снижение поверхности утечки.
-
-Контракт результата:
-* `node_ids` — все классы, которые пайплайн в итоге оставляет в подграфе
-  (т.е. `required ∪ useful`). Anchor дополнительно гарантируется в
-  required, если LLM почему-то его не упомянул.
-* `payload.required` / `payload.useful` — раздельные множества, нужны
-  и для `to_diagram()`, и для метрик.
+Контракт:
+- `payload.required` / `payload.useful` — отфильтрованные по valid_ids списки.
+- `node_ids` = required ∪ useful.
+- Если вызов или парсинг упали — возвращается `StageOutcome(aborted=...)`.
 """
 
 from __future__ import annotations
@@ -33,310 +21,16 @@ from src.llm.client import LLMClient
 from src.llm.parser import parse_json_response
 
 
-_METHODS_PER_NODE = 30
-_PARAMS_PER_NODE = 20
-
-
-def _short_name(node_id: str) -> str:
-    return node_id.rsplit(".", 1)[-1] if "." in node_id else node_id
-
-
-def _node_for_llm(node: dict[str, Any]) -> dict[str, Any]:
-    """Узкий снимок узла для LLM — без `description`, с обрезанными
-    методами/параметрами."""
-    return {
-        "node_id": node.get("node_id"),
-        "name": node.get("name") or _short_name(node.get("node_id", "")),
-        "type": node.get("type", "class"),
-        "methods": (node.get("methods") or []),
-        "params": (node.get("params") or []),
-    }
-
-
-def _edge_for_llm(edge: dict[str, Any]) -> dict[str, Any]:
-    """Узкий снимок ребра — оставляем только направление и тип связи."""
-    return {
-        "from": edge.get("node_id_from"),
-        "to": edge.get("node_id_to"),
-        "kind": edge.get("description") or edge.get("kind") or "",
-    }
-
-
-async def _execute_single_prune_step(
-    *,
-    step_name: str,
-    step_index: int,
-    query: str,
-    sub_nodes: list[dict[str, Any]],
-    sub_edges: list[dict[str, Any]],
-    context: dict[str, Any],
-    llm: LLMClient,
-    tracer: LLMTracer | None,
-    sample_id: str,
-) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """Выполнить один шаг multi-step прунинга.
-    
-    Возвращает:
-    - data: результат парсинга JSON (или None при ошибке)
-    - info: метаданные вызова (timing, tokens, errors)
-    """
-    system_prompt = prompt_templates.prune_step_system(step_name)
-    user_prompt = prompt_templates.prune_step_user(
-        step_name=step_name,
-        query=query,
-        nodes=sub_nodes,
-        edges=sub_edges,
-        context=context,
-    )
-    
-    stage_name_for_tracer = f"{StageName.PRUNE.value}_step{step_index + 1}_{step_name}"
-    
-    if tracer is not None and sample_id:
-        tracer.record_request(StageName.PRUNE, f"{sample_id}_{stage_name_for_tracer}", 
-                             system_prompt, user_prompt)
-    
-    started = time.time()
-    try:
-        resp = await llm.call(system_prompt, user_prompt, json_mode=True)
-    except Exception as e:  # noqa: BLE001
-        tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-        error_msg = (
-            f"[stage4_prune, step {step_index + 1}: {step_name}] "
-            f"LLM call failed for sample '{sample_id}'\n"
-            f"Error type: {type(e).__name__}\n"
-            f"Error message: {str(e)}\n"
-            f"Traceback:\n{tb_str}"
-        )
-        if tracer is not None and sample_id:
-            tracer.record_error(StageName.PRUNE, f"{sample_id}_{stage_name_for_tracer}", 
-                              error_msg)
-        info = {
-            "step": step_index + 1,
-            "step_name": step_name,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "traceback": tb_str,
-            "elapsed_s": round(time.time() - started, 2),
-        }
-        return None, info
-    
-    if tracer is not None and sample_id:
-        tracer.record_response(StageName.PRUNE, f"{sample_id}_{stage_name_for_tracer}", 
-                              resp.content)
-    
-    info = {
-        "step": step_index + 1,
-        "step_name": step_name,
-        "elapsed_s": round(time.time() - started, 2),
-        "input_tokens": resp.input_tokens,
-        "output_tokens": resp.output_tokens,
-    }
-    
-    try:
-        data = parse_json_response(resp.content)
-    except ValueError as e:
-        error_msg = (
-            f"[stage4_prune, step {step_index + 1}: {step_name}] "
-            f"JSON parsing failed for sample '{sample_id}'\n"
-            f"Error: {str(e)}\n"
-            f"Response excerpt: {resp.content[:200]}"
-        )
-        info["error"] = str(e)
-        info["raw_excerpt"] = resp.content[:200]
-        info["full_response"] = resp.content
-        return None, info
-    
-    if not isinstance(data, dict):
-        info["error"] = "Response is not a JSON object"
-        info["raw_excerpt"] = resp.content[:200]
-        return None, info
-    
-    return data, info
-
-
-def _filter_graph_by_excluded(
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
-    excluded_ids: list[str],
-) -> dict[str, Any]:
-    """Отфильтровать граф, удалив исключённые вершины.
-    
-    Args:
-        nodes: список всех узлов
-        edges: список всех рёбер
-        excluded_ids: список node_id которые нужно исключить
-    
-    Returns:
-        {"nodes": [...], "edges": [...]} - граф без исключённых вершин
-    """
-    excluded_set = set(excluded_ids)
-    
-    # Узлы без исключённых
-    filtered_nodes = [n for n in nodes if n.get("node_id") not in excluded_set]
-    
-    # Рёбра: оставляем только если оба конца НЕ в excluded
-    filtered_edges = [
-        e for e in edges
-        if e.get("node_id_from") not in excluded_set
-        and e.get("node_id_to") not in excluded_set
-    ]
-    
-    return {"nodes": filtered_nodes, "edges": filtered_edges}
-
-
 async def prune_subgraph(
     *,
     query: str,
     sub_nodes: list[dict[str, Any]],
     sub_edges: list[dict[str, Any]],
     llm: LLMClient,
-    prune_steps: list[str] = None,
     tracer: LLMTracer | None = None,
     sample_id: str = "",
 ) -> StageOutcome:
-    """Прогнать multi-step LLM-прунинг и вернуть структурированный StageOutcome.
-    
-    Общая логика без привязки к конкретным полям:
-    - Каждый шаг возвращает произвольный JSON
-    - Весь JSON автоматически попадает в context для следующего шага
-    - Только ПОСЛЕДНИЙ шаг должен вернуть required/useful (это контракт stage 4)
-    - Все промежуточные поля определяются промптами, не кодом
-    
-    Args:
-        prune_steps: список имён шагов (например, ["identify_core", "classify_neighbors"]).
-                     Если None или ["single"], выполняется одношаговый прунинг.
-        tracer: записывает request/response для каждого шага.
-        sample_id: идентификатор сэмпла для логирования.
-    """
-    if prune_steps is None or prune_steps == ["single"]:
-        prune_steps = ["single"]
-    
-    started_total = time.time()
-    valid_ids = {n["node_id"] for n in sub_nodes if n.get("node_id")}
-    
-    # Контекст, передаваемый между шагами - накапливаем ВСЕ результаты
-    context: dict[str, Any] = {}
-    # Метаданные всех шагов
-    steps_info: list[dict[str, Any]] = []
-    
-    # Результат последнего шага
-    last_step_data: dict[str, Any] | None = None
-    
-    # Выполняем шаги последовательно
-    for step_idx, step_name in enumerate(prune_steps):
-        data, step_info = await _execute_single_prune_step(
-            step_name=step_name,
-            step_index=step_idx,
-            query=query,
-            sub_nodes=sub_nodes,
-            sub_edges=sub_edges,
-            context=context,
-            llm=llm,
-            tracer=tracer,
-            sample_id=sample_id,
-        )
-        
-        # Сохраняем ВЕСЬ response в метаданные (для диагностики)
-        step_info["response_data"] = data if data is not None else None
-        steps_info.append(step_info)
-        
-        # Если ошибка — прерываем
-        if data is None:
-            return StageOutcome(
-                stage=StageName.PRUNE,
-                aborted=f"step{step_idx + 1}_failed",
-                info={
-                    "subgraph_input_size": len(sub_nodes),
-                    "total_steps": len(prune_steps),
-                    "failed_at_step": step_idx + 1,
-                    "steps": steps_info,
-                    "elapsed_total_s": round(time.time() - started_total, 2),
-                },
-            )
-        
-        # ОБЩАЯ ЛОГИКА: весь JSON response идёт в context для следующих шагов
-        # Никаких проверок на конкретные поля!
-        for key, value in data.items():
-            context[key] = value
-        
-        # АВТОМАТИЧЕСКАЯ ГЕНЕРАЦИЯ ГРАФОВ ДЛЯ EXCLUDED ПОЛЕЙ
-        # Если LLM вернул поле с суффиксом _excluded (например, nodes_excluded),
-        # автоматически создаём отфильтрованный граф {prefix}_excluded_graph
-        for key, value in data.items():
-            if key.endswith("_excluded") and isinstance(value, list):
-                # Извлекаем префикс (nodes_excluded → nodes)
-                graph_key = f"{key}_graph"
-                
-                # Фильтруем граф, убирая исключённые вершины
-                filtered_graph = _filter_graph_by_excluded(
-                    sub_nodes, sub_edges, value
-                )
-                
-                # Добавляем в context для следующих шагов
-                context[graph_key] = filtered_graph
-        
-        # Запоминаем результат последнего шага
-        last_step_data = data
-    
-    # КОНТРАКТ: последний шаг ОБЯЗАН вернуть required/useful
-    if last_step_data is None:
-        return StageOutcome(
-            stage=StageName.PRUNE,
-            aborted="no_steps_executed",
-            info={
-                "subgraph_input_size": len(sub_nodes),
-                "total_steps": len(prune_steps),
-                "steps": steps_info,
-                "elapsed_total_s": round(time.time() - started_total, 2),
-            },
-        )
-    
-    # Извлекаем required/useful из последнего шага
-    # Только эти поля обязательны - всё остальное определяется промптами
-    required = {
-        x for x in (last_step_data.get("required") or [])
-        if isinstance(x, str) and x in valid_ids
-    }
-    useful = {
-        x for x in (last_step_data.get("useful") or [])
-        if isinstance(x, str) and x in valid_ids and x not in required
-    }
-    
-    # Итоговая информация
-    info = {
-        "subgraph_input_size": len(sub_nodes),
-        "total_steps": len(prune_steps),
-        "steps": steps_info,
-        "elapsed_total_s": round(time.time() - started_total, 2),
-    }
-    
-    keep = required | useful
-    return StageOutcome(
-        stage=StageName.PRUNE,
-        node_ids=sorted(keep),
-        payload={
-            "required": sorted(required),
-            "useful": sorted(useful),
-        },
-        info=info,
-    )
-
-
-# Обратная совместимость: старая функция для одношагового прунинга
-async def prune_subgraph_legacy(
-    *,
-    query: str,
-    sub_nodes: list[dict[str, Any]],
-    sub_edges: list[dict[str, Any]],
-    llm: LLMClient,
-    tracer: LLMTracer | None = None,
-    sample_id: str = "",
-) -> StageOutcome:
-    """Legacy версия для обратной совместимости.
-    
-    Использует оригинальные промпты prune_system.txt / prune_user.txt.
-    Новый код должен использовать prune_subgraph() с prune_steps.
-    """
+    """Один LLM-вызов: подграф → required / useful."""
     system_prompt = prompt_templates.prune_system()
     user_prompt = prompt_templates.prune_user(
         query=query,
@@ -350,17 +44,10 @@ async def prune_subgraph_legacy(
     started = time.time()
     try:
         resp = await llm.call(system_prompt, user_prompt, json_mode=True)
-    except Exception as e:  # noqa: BLE001 — общая точка обработки внешних сбоев
-        # Получаем полный traceback для детальной диагностики
+    except Exception as e:  # noqa: BLE001
         tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-        error_msg = (
-            f"[stage4_prune] LLM call failed for sample '{sample_id}'\n"
-            f"Error type: {type(e).__name__}\n"
-            f"Error message: {str(e)}\n"
-            f"Traceback:\n{tb_str}"
-        )
         if tracer is not None and sample_id:
-            tracer.record_error(StageName.PRUNE, sample_id, error_msg)
+            tracer.record_error(StageName.PRUNE, sample_id, tb_str)
         return StageOutcome(
             stage=StageName.PRUNE,
             aborted="llm_call_failed",
@@ -375,7 +62,7 @@ async def prune_subgraph_legacy(
     if tracer is not None and sample_id:
         tracer.record_response(StageName.PRUNE, sample_id, resp.content)
 
-    info = {
+    info: dict[str, Any] = {
         "elapsed_s": round(time.time() - started, 2),
         "input_tokens": resp.input_tokens,
         "output_tokens": resp.output_tokens,
@@ -385,20 +72,12 @@ async def prune_subgraph_legacy(
     try:
         data = parse_json_response(resp.content)
     except ValueError as e:
-        error_msg = (
-            f"[stage4_prune] JSON parsing failed for sample '{sample_id}'\n"
-            f"Error: {str(e)}\n"
-            f"Response excerpt: {resp.content[:200]}"
-        )
         return StageOutcome(
             stage=StageName.PRUNE,
             aborted="bad_json",
-            info={
-                **info,
-                "error": str(e),
-                "raw_excerpt": resp.content[:200],
-                "full_response": resp.content,
-            },
+            info={**info, "error": str(e),
+                  "raw_excerpt": resp.content[:200],
+                  "full_response": resp.content},
         )
     if not isinstance(data, dict):
         return StageOutcome(
@@ -407,7 +86,6 @@ async def prune_subgraph_legacy(
             info={**info, "raw_excerpt": resp.content[:200]},
         )
 
-    # Доверяем только тем node_id, которые реально были в подграфе.
     valid_ids = {n["node_id"] for n in sub_nodes if n.get("node_id")}
     required = {
         x for x in (data.get("required") or [])
@@ -418,20 +96,14 @@ async def prune_subgraph_legacy(
         if isinstance(x, str) and x in valid_ids and x not in required
     }
 
-    # Сохраняем reasoning если есть (для диагностики)
     reasoning = data.get("reasoning", "")
     if reasoning:
         info["reasoning"] = reasoning
-
-    # Anchor по определению релевантен — гарантируем его наличие.
 
     keep = required | useful
     return StageOutcome(
         stage=StageName.PRUNE,
         node_ids=sorted(keep),
-        payload={
-            "required": sorted(required),
-            "useful": sorted(useful),
-        },
+        payload={"required": sorted(required), "useful": sorted(useful)},
         info=info,
     )

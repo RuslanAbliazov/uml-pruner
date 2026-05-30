@@ -65,13 +65,18 @@ python scripts/build_index.py --all
 The approach has its own CLI right next to the source:
 
 ```bash
-# Whole dataset
+# Full pipeline (stages 1–4), whole dataset
 python src/approaches/anchor_neighbors/run.py
 
-# Restrict to a repo / subset / single sample
+# Restrict to a repo / subset
 python src/approaches/anchor_neighbors/run.py --repo apache/hadoop
 python src/approaches/anchor_neighbors/run.py --limit 5
-python src/approaches/anchor_neighbors/run.py --sample-id <id>
+
+# Stop after stage 3 (saves subgraphs to <outputs_dir>/stage3/ for later)
+python src/approaches/anchor_neighbors/run.py --until neighbors --no-eval
+
+# Run only the LLM prune step on pre-saved stage3 data
+python src/approaches/anchor_neighbors/run.py --from-stage3 data/results/anchor_neighbors/llm/stage3
 
 # Skip eval
 python src/approaches/anchor_neighbors/run.py --no-eval
@@ -80,13 +85,21 @@ python src/approaches/anchor_neighbors/run.py --no-eval
 The generic ``scripts/run.py --approach anchor_neighbors`` works too — both
 share the same factory and produce identical output.
 
-Outputs go to `data/results/anchor_neighbors/` (gitignored):
+Outputs go to `data/results/anchor_neighbors/<selector>/` (gitignored):
 
-- `<sample_id>.json` — pruned subgraph + per-sample metadata (selected
-  anchor, candidate list with retrieval scores, neighbor / subgraph counts,
-  LLM selection reason).
-- `evaluation_report.json` — aggregate metrics (auto-written unless
-  `--no-eval` is passed).
+- `<sample_id>.json` — flat result per sample:
+  ```json
+  {
+    "sample_id": "69daa5ae9ef2781f4bc53400",
+    "repo": "apache/flink",
+    "query": "Show the main and supporting classes ...",
+    "required": ["org.apache.flink...BlocklistDeclarativeSlotPool", "..."],
+    "useful":   ["org.apache.flink...BlocklistDeclarativeSlotPoolTest", "..."]
+  }
+  ```
+- `stage3/<sample_id>.json` — intermediate subgraph (written when `--until neighbors`).
+- `report.jsonl` — per-sample stage metrics.
+- `aggregate.json` — aggregate metrics (written unless `--no-eval`).
 - `errors.json` — per-sample failures.
 
 ## Configuration

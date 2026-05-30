@@ -33,8 +33,15 @@ class EvaluationResult:
 
 
 def _predicted_node_ids(result_path: Path) -> set[str]:
-    """Extract predicted node_ids from a pipeline output JSON."""
+    """Extract predicted node_ids from a pipeline output JSON.
+
+    Supports two formats:
+    - flat {required, useful}: used by anchor_neighbors and human_like_agent.
+    - diagram {nodes}: used by baselines and oracle runners.
+    """
     data = load_diagram(result_path)
+    if "required" in data or "useful" in data:
+        return set(data.get("required", [])) | set(data.get("useful", []))
     return {n["node_id"] for n in data.get("nodes", [])}
 
 

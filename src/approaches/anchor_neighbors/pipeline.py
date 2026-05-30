@@ -2,32 +2,28 @@
 
 Соединяет 4 этапа: retrieve → anchor → neighbors → prune.
 
-Главное API: `AnchorNeighborsPipeline.run(inputs, until)`. Возвращает
-объект `PipelineOutcome`, который держит:
+Публичное API:
+- `AnchorNeighborsPipeline.run_with_stages(inputs, until)` — прогнать до
+  указанного этапа; вернуть `PipelineOutcome` со всеми промежуточными
+  результатами (нужны для метрик и дебага).
+- `AnchorNeighborsPipeline.run(inputs)` — тонкий адаптер для реестра
+  подходов; всегда прогоняет до PRUNE.
 
-* `stages: dict[StageName, StageOutcome]` — результат каждого выполненного
-  этапа (для дебаг-отчёта и оценки по этапам);
-* `result: ApproachResult` — стандартный продакшн-вид результата
-  (узлы/рёбра отфильтрованного подграфа + required/useful + metadata).
+При `until=NEIGHBORS` pipeline сохраняет `sub_nodes`/`sub_edges` в
+`<outputs_dir>/stage3/<sample_id>.json` — чтобы потом можно было
+запустить только LLM-прунинг через `--from-stage3`.
 
-Для совместимости с реестром (`src.approaches.__init__`) реализуем
-протокол `ApproachRunner`: метод `run(inputs)` без `until`. Он просто
-вызывает `run(inputs, until=PRUNE)` и возвращает только `result`.
-
-Гарантии этого файла:
-* НИКАКОГО ground-truth внутри. Pipeline видит только `(query, diagram)`.
-  Метрики считаются СНАРУЖИ, в `metrics.py`, на основе `stages`.
-* Никакого логирования. Все диагностические данные — в `StageOutcome.info`,
-  они дойдут до пользователя через дебаг-отчёт.
+Гарантии:
+- Никакого ground-truth внутри. Pipeline видит только `(query, diagram)`.
+- Никакого логирования. Диагностика — в `StageOutcome.info`.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
-
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from src.approaches._common.compressor import filter_subgraph
 from src.approaches.anchor_neighbors import (
@@ -55,85 +51,11 @@ NAME = "anchor_neighbors"
 
 @dataclass
 class PipelineOutcome:
-    """Полный результат одного запуска: и сырьё для оценки, и финал."""
+    """Полный результат одного запуска."""
     stages: dict[StageName, StageOutcome] = field(default_factory=dict)
     result: ApproachResult = field(
         default_factory=lambda: ApproachResult(approach=NAME)
     )
-
-
-def _save_stage2_anchors(
-    anchors: list[str],
-    query: str,
-    inputs: ApproachInputs,
-) -> None:
-    """Сохранить список anchor-классов после этапа 2."""
-    out_dir = Path("data/stage2_anchors")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    safe_repo = inputs.repo.replace("/", "_") if inputs.repo else "unknown"
-    sample_id = inputs.sample_id or "nosample"
-    fname = f"{safe_repo}__{sample_id}.json"
-    with (out_dir / fname).open("w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "anchors": anchors,
-                "query": query,
-                "sample_id": inputs.sample_id,
-                "repo": inputs.repo,
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        )
-
-
-def _save_stage3_graph(
-    sub_nodes: list[dict[str, Any]],
-    sub_edges: list[dict[str, Any]],
-    inputs: ApproachInputs,
-) -> None:
-    out_dir = Path("data/stage3_graphs")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    safe_repo = inputs.repo.replace("/", "_") if inputs.repo else "unknown"
-    sample_id = inputs.sample_id or "nosample"
-    fname = f"{safe_repo}__{sample_id}.json"
-    with (out_dir / fname).open("w", encoding="utf-8") as f:
-        json.dump(
-            {"nodes": sub_nodes, "edges": sub_edges},
-            f,
-            ensure_ascii=False,
-            indent=2,
-            default=str,   # <-- спасает от несериализуемых типов
-        )
-
-
-def _save_stage3_prompt_data(
-    query: str,
-    sub_nodes: list[dict[str, Any]],
-    sub_edges: list[dict[str, Any]],
-    inputs: ApproachInputs,
-) -> None:
-    """Сохранить данные для промпта этапа 4, чтобы можно было пропустить этапы 1-3."""
-    out_dir = Path("data/stage3_prompts")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    safe_repo = inputs.repo.replace("/", "_") if inputs.repo else "unknown"
-    sample_id = inputs.sample_id or "nosample"
-    fname = f"{safe_repo}__{sample_id}.json"
-    with (out_dir / fname).open("w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "query": query,
-                "sub_nodes": sub_nodes,
-                "sub_edges": sub_edges,
-                "sample_id": inputs.sample_id,
-                "repo": inputs.repo,
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        )
 
 
 class AnchorNeighborsPipeline:
@@ -141,11 +63,7 @@ class AnchorNeighborsPipeline:
 
     name = NAME
 
-    def __init__(
-        self,
-        settings: AnchorNeighborsSettings,
-        llm: LLMClient,
-    ) -> None:
+    def __init__(self, settings: AnchorNeighborsSettings, llm: LLMClient) -> None:
         self._settings = settings
         self._llm = llm
         self._retriever = stage1_retrieve.CandidateRetriever(
@@ -154,19 +72,13 @@ class AnchorNeighborsPipeline:
             batch_size=settings.retriever.batch_size,
             cache_dir=settings.retriever.cache_dir,
         )
-        # Трейсер LLM-вызовов: пишет последний request/response на (этап, sample_id).
-        # Папку создаст сам при первом обращении; если sample_id у inputs
-        # пустой — записи просто не будет (см. stage2/stage4).
         self._tracer = LLMTracer(settings.pipeline.llm_traces_dir)
-        # Логгер ошибок: пишет полный traceback + контекст при любой ошибке
-        error_log_dir = Path("data/errors/anchor_neighbors") / settings.pipeline.anchor_selector
-        self._error_logger = ErrorLogger(error_log_dir)
-        # Reranker инстанцируется лениво — только если выбрана ветка
-        # `anchor_selector == "reranker"`. В режиме `"llm"` модель никогда
-        # не загружается, и тяжёлые torch-зависимости не нужны.
+        self._error_logger = ErrorLogger(
+            Path("data/errors/anchor_neighbors") / settings.pipeline.anchor_selector
+        )
         self._reranker: LocalReranker | None = None
         if settings.pipeline.anchor_selector == "reranker":
-            assert settings.reranker is not None  # гарантировано load_settings()
+            assert settings.reranker is not None
             self._reranker = LocalReranker(
                 RerankerConfig(
                     model_name=settings.reranker.model_name,
@@ -180,28 +92,20 @@ class AnchorNeighborsPipeline:
     def settings(self) -> AnchorNeighborsSettings:
         return self._settings
 
-    # ---- основной публичный интерфейс ---------------------------------
-
     async def run_with_stages(
         self,
         inputs: ApproachInputs,
         until: StageName = StageName.PRUNE,
     ) -> PipelineOutcome:
-        """Прогнать пайплайн до указанного этапа включительно.
-
-        Возвращает `PipelineOutcome` со всеми промежуточными результатами.
-        Если этап завершился с `aborted` — следующие этапы не запускаются;
-        в `stages` останутся только дошедшие.
-        """
+        """Прогнать пайплайн до указанного этапа включительно."""
         stages: dict[StageName, StageOutcome] = {}
 
-        # Подготовка: индексируем узлы по id; вычисляем имя файла индекса.
         nodes = inputs.nodes
         edges = inputs.edges
         node_by_id = {n["node_id"]: n for n in nodes if n.get("node_id")}
         diagram_stem = _diagram_stem(inputs.repo)
 
-        # ---- этап 1 ---------------------------------------------------
+        # ---- этап 1: RAG -----------------------------------------------
         try:
             s1 = self._retriever.run(
                 query=inputs.query,
@@ -214,43 +118,28 @@ class AnchorNeighborsPipeline:
                 stage_name="retrieve",
                 sample_id=inputs.sample_id,
                 exception=e,
-                context={
-                    "query": inputs.query,
-                    "repo": inputs.repo,
-                    "diagram_stem": diagram_stem,
-                    "nodes_count": len(nodes),
-                    "top_k": self._settings.pipeline.n_candidates,
-                },
+                context={"query": inputs.query, "repo": inputs.repo,
+                         "diagram_stem": diagram_stem, "nodes_count": len(nodes),
+                         "top_k": self._settings.pipeline.n_candidates},
             )
-            raise  # Пробрасываем дальше, чтобы run.py тоже увидел
-        
+            raise
+
         stages[StageName.RETRIEVE] = s1
-        
-        # Если этап завершился с aborted, логируем детали
         if not s1.is_ok():
             self._error_logger.log_stage_error(
-                stage_name="retrieve",
-                sample_id=inputs.sample_id,
+                stage_name="retrieve", sample_id=inputs.sample_id,
                 exception=Exception(f"Stage aborted: {s1.aborted}"),
-                context={
-                    "query": inputs.query,
-                    "repo": inputs.repo,
-                    "aborted_reason": s1.aborted,
-                    "stage_info": s1.info,
-                },
+                context={"query": inputs.query, "repo": inputs.repo,
+                         "aborted_reason": s1.aborted, "stage_info": s1.info},
             )
-        
         if not s1.is_ok() or until == StageName.RETRIEVE:
             return _build_outcome(stages, inputs, node_by_id, edges)
 
-        # ---- этап 2 ---------------------------------------------------
-        # Развилка по `anchor_selector`. Обе ветки возвращают одинаковый
-        # `StageOutcome(stage=ANCHOR, ...)` с полями `payload.anchors` (top-N)
-        # и `payload.anchor` (top-1 — для обратной совместимости).
+        # ---- этап 2: выбор anchor --------------------------------------
         n_anchors = self._settings.pipeline.n_anchors
         try:
             if self._settings.pipeline.anchor_selector == "reranker":
-                assert self._reranker is not None  # гарантировано __init__
+                assert self._reranker is not None
                 s2 = await stage2_rerank_anchor.select_anchor_via_reranker(
                     query=inputs.query,
                     candidates=s1.payload["candidates"],
@@ -272,52 +161,30 @@ class AnchorNeighborsPipeline:
                 )
         except Exception as e:
             self._error_logger.log_stage_error(
-                stage_name="anchor",
-                sample_id=inputs.sample_id,
-                exception=e,
-                context={
-                    "query": inputs.query,
-                    "repo": inputs.repo,
-                    "candidates_count": len(s1.payload.get("candidates", [])),
-                    "n_anchors": n_anchors,
-                    "anchor_selector": self._settings.pipeline.anchor_selector,
-                },
+                stage_name="anchor", sample_id=inputs.sample_id, exception=e,
+                context={"query": inputs.query, "repo": inputs.repo,
+                         "candidates_count": len(s1.payload.get("candidates", [])),
+                         "n_anchors": n_anchors,
+                         "anchor_selector": self._settings.pipeline.anchor_selector},
             )
             raise
-        
+
         stages[StageName.ANCHOR] = s2
-        
         if not s2.is_ok():
             self._error_logger.log_stage_error(
-                stage_name="anchor",
-                sample_id=inputs.sample_id,
+                stage_name="anchor", sample_id=inputs.sample_id,
                 exception=Exception(f"Stage aborted: {s2.aborted}"),
-                context={
-                    "query": inputs.query,
-                    "repo": inputs.repo,
-                    "aborted_reason": s2.aborted,
-                    "stage_info": s2.info,
-                },
+                context={"query": inputs.query, "repo": inputs.repo,
+                         "aborted_reason": s2.aborted, "stage_info": s2.info},
             )
-        
         if not s2.is_ok() or until == StageName.ANCHOR:
             return _build_outcome(stages, inputs, node_by_id, edges)
 
-        # `anchors` — основной список; если по какой-то причине его нет в
-        # payload (например, кастомный stage2), берём top-1 как раньше.
         anchors: list[str] = list(
             s2.payload.get("anchors") or [s2.payload["anchor"]]
         )
-        
-        # Сохраняем anchor-классы для возможности пропуска этапов 1-2
-        if s2.is_ok():
-            _save_stage2_anchors(
-                anchors=anchors,
-                query=inputs.query,
-                inputs=inputs,
-            )
 
-        # ---- этап 3 ---------------------------------------------------
+        # ---- этап 3: расширение соседей --------------------------------
         try:
             s3 = stage3_expand_neighbors.expand_neighbors(
                 anchors=anchors,
@@ -328,151 +195,103 @@ class AnchorNeighborsPipeline:
             )
         except Exception as e:
             self._error_logger.log_stage_error(
-                stage_name="neighbors",
-                sample_id=inputs.sample_id,
-                exception=e,
-                context={
-                    "query": inputs.query,
-                    "repo": inputs.repo,
-                    "anchors": anchors,
-                    "nodes_count": len(nodes),
-                    "edges_count": len(edges),
-                    "cap": self._settings.pipeline.max_subgraph_nodes,
-                    # Сохраняем пример ребра для диагностики структуры
-                    "edge_sample": edges[0] if edges else None,
-                    "node_sample": nodes[0] if nodes else None,
-                },
+                stage_name="neighbors", sample_id=inputs.sample_id, exception=e,
+                context={"query": inputs.query, "repo": inputs.repo,
+                         "anchors": anchors, "nodes_count": len(nodes),
+                         "edges_count": len(edges),
+                         "cap": self._settings.pipeline.max_subgraph_nodes,
+                         "edge_sample": edges[0] if edges else None,
+                         "node_sample": nodes[0] if nodes else None},
             )
             raise
-        
+
         stages[StageName.NEIGHBORS] = s3
-        
         if not s3.is_ok():
             self._error_logger.log_stage_error(
-                stage_name="neighbors",
-                sample_id=inputs.sample_id,
+                stage_name="neighbors", sample_id=inputs.sample_id,
                 exception=Exception(f"Stage aborted: {s3.aborted}"),
-                context={
-                    "query": inputs.query,
-                    "repo": inputs.repo,
-                    "anchors": anchors,
-                    "aborted_reason": s3.aborted,
-                    "stage_info": s3.info,
-                },
+                context={"query": inputs.query, "repo": inputs.repo,
+                         "anchors": anchors, "aborted_reason": s3.aborted,
+                         "stage_info": s3.info},
             )
-        
-        # Сохраняем данные для этапа 4 (промпт), чтобы можно было пропустить этапы 1-3
-        if s3.is_ok():
-            _save_stage3_prompt_data(
+
+        # При --until neighbors сохраняем sub_nodes/sub_edges — чтобы потом
+        # можно было запустить только прунинг через --from-stage3.
+        if s3.is_ok() and until == StageName.NEIGHBORS:
+            _save_stage3(
+                sample_id=inputs.sample_id,
+                repo=inputs.repo,
                 query=inputs.query,
                 sub_nodes=s3.payload["sub_nodes"],
                 sub_edges=s3.payload["sub_edges"],
-                inputs=inputs,
+                out_dir=self._settings.pipeline.outputs_dir / "stage3",
             )
-            _save_stage3_graph(
-                s3.payload["sub_nodes"],
-                s3.payload["sub_edges"],
-                inputs=inputs,
-            )
-        
+
         if not s3.is_ok() or until == StageName.NEIGHBORS:
             return _build_outcome(stages, inputs, node_by_id, edges)
 
-        # ---- этап 4 ---------------------------------------------------
+        # ---- этап 4: LLM-прунинг --------------------------------------
         try:
             s4 = await stage4_prune.prune_subgraph(
                 query=inputs.query,
                 sub_nodes=s3.payload["sub_nodes"],
                 sub_edges=s3.payload["sub_edges"],
                 llm=self._llm,
-                prune_steps=self._settings.pipeline.prune_steps,
                 tracer=self._tracer,
                 sample_id=inputs.sample_id,
             )
         except Exception as e:
             self._error_logger.log_stage_error(
-                stage_name="prune",
-                sample_id=inputs.sample_id,
-                exception=e,
-                context={
-                    "query": inputs.query,
-                    "repo": inputs.repo,
-                    "sub_nodes_count": len(s3.payload["sub_nodes"]),
-                    "sub_edges_count": len(s3.payload["sub_edges"]),
-                    "prune_steps": self._settings.pipeline.prune_steps,
-                },
+                stage_name="prune", sample_id=inputs.sample_id, exception=e,
+                context={"query": inputs.query, "repo": inputs.repo,
+                         "sub_nodes_count": len(s3.payload["sub_nodes"]),
+                         "sub_edges_count": len(s3.payload["sub_edges"])},
             )
             raise
-        
+
         stages[StageName.PRUNE] = s4
-        
         if not s4.is_ok():
             self._error_logger.log_stage_error(
-                stage_name="prune",
-                sample_id=inputs.sample_id,
+                stage_name="prune", sample_id=inputs.sample_id,
                 exception=Exception(f"Stage aborted: {s4.aborted}"),
-                context={
-                    "query": inputs.query,
-                    "repo": inputs.repo,
-                    "aborted_reason": s4.aborted,
-                    "stage_info": s4.info,
-                },
+                context={"query": inputs.query, "repo": inputs.repo,
+                         "aborted_reason": s4.aborted, "stage_info": s4.info},
             )
-        
+
         return _build_outcome(stages, inputs, node_by_id, edges)
 
-    # ---- совместимость с интерфейсом ApproachRunner -------------------
-
     async def run(self, inputs: ApproachInputs) -> ApproachResult:
-        """Минимальный интерфейс для реестра подходов: всегда до prune."""
+        """Минимальный интерфейс для реестра подходов."""
         outcome = await self.run_with_stages(inputs, until=StageName.PRUNE)
         return outcome.result
 
     async def aclose(self) -> None:
-        """Долгоживущих ресурсов нет; метод нужен только из-за протокола."""
         return None
 
-    async def run_stage4_only(
-        self,
-        query: str,
-        sub_nodes: list[dict[str, Any]],
-        sub_edges: list[dict[str, Any]],
-        sample_id: str = "",
-    ) -> PipelineOutcome:
-        """Запустить только этап 4 (prune) на готовых данных из stage3.
-        
-        Используется когда данные stage3 были сохранены ранее и нужно
-        только выполнить LLM-прунинг без повторного выполнения этапов 1-3.
-        """
-        stages: dict[StageName, StageOutcome] = {}
-        
-        # Выполняем только этап 4
-        s4 = await stage4_prune.prune_subgraph(
-            query=query,
-            sub_nodes=sub_nodes,
-            sub_edges=sub_edges,
-            llm=self._llm,
-            prune_steps=self._settings.pipeline.prune_steps,
-            tracer=self._tracer,
-            sample_id=sample_id,
-        )
-        stages[StageName.PRUNE] = s4
-        
-        # Строим node_by_id из sub_nodes для _build_outcome
-        node_by_id = {n["node_id"]: n for n in sub_nodes if n.get("node_id")}
-        
-        # Создаем минимальный ApproachInputs для _build_outcome
-        inputs = ApproachInputs(
-            query=query,
-            diagram={"nodes": sub_nodes, "edges": sub_edges},
-            sample_id=sample_id,
-            repo="",  # Repo неизвестен при загрузке из stage3
-        )
-        
-        return _build_outcome(stages, inputs, node_by_id, sub_edges)
 
+# ---- вспомогательные функции -------------------------------------------
 
-# ---- сборка финального ApproachResult из последнего успешного этапа ----
+def _save_stage3(
+    *,
+    sample_id: str,
+    repo: str,
+    query: str,
+    sub_nodes: list[dict[str, Any]],
+    sub_edges: list[dict[str, Any]],
+    out_dir: Path,
+) -> None:
+    """Сохранить подграф после этапа 3 для последующего запуска LLM."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    data = {
+        "sample_id": sample_id,
+        "repo": repo,
+        "query": query,
+        "sub_nodes": sub_nodes,
+        "sub_edges": sub_edges,
+    }
+    with (out_dir / f"{sample_id}.json").open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+
 
 def _build_outcome(
     stages: dict[StageName, StageOutcome],
@@ -480,22 +299,10 @@ def _build_outcome(
     node_by_id: dict[str, dict[str, Any]],
     edges: list[dict[str, Any]],
 ) -> PipelineOutcome:
-    """Из набора пройденных этапов слепить ApproachResult.
-
-    Логика «последний успешный этап задаёт финальный подграф»:
-
-    * Если выполнен prune — required/useful берутся из его payload,
-      подграф = required ∪ useful.
-    * Если до prune не дошли (например, при `--until neighbors`) —
-      подграф = node_ids этапа neighbors, classification пустой.
-    * Если не дошли и до neighbors — подграф пуст, метаданные
-      сохраняют то, что успели увидеть.
-    """
+    """Собрать ApproachResult из последнего успешного этапа."""
     metadata: dict[str, Any] = {
         "stages_executed": [s.value for s in stages],
     }
-
-    # Прокинем краткие сводки по каждому этапу — удобно при ручном просмотре.
     for stage_name in STAGE_ORDER:
         outc = stages.get(stage_name)
         if outc is None:
@@ -507,7 +314,6 @@ def _build_outcome(
             **{k: v for k, v in outc.info.items() if _is_jsonable(v)},
         }
 
-    # Определим финальный набор узлов/required/useful.
     required: list[str] = []
     useful: list[str] = []
     keep: set[str] = set()
@@ -523,9 +329,7 @@ def _build_outcome(
     elif (retr := stages.get(StageName.RETRIEVE)) and retr.is_ok():
         keep = set(retr.node_ids)
 
-    sub_nodes, sub_edges = filter_subgraph(
-        list(node_by_id.values()), edges, keep
-    )
+    sub_nodes, sub_edges = filter_subgraph(list(node_by_id.values()), edges, keep)
     result = ApproachResult(
         approach=NAME,
         nodes=sub_nodes,
@@ -538,15 +342,9 @@ def _build_outcome(
 
 
 def _diagram_stem(repo: str) -> str:
-    """Имя индекс-папки эмбеддингов под этот repo (без `.json`).
-
-    Делегируем `diagram_filename_for_repo`, чтобы pipeline и benchmark
-    смотрели в одну и ту же папку индексов даже после ручного маппинга
-    отдельных репо."""
     fname = diagram_filename_for_repo(repo or "")
     return fname[:-5] if fname.endswith(".json") else fname
 
 
 def _is_jsonable(v: Any) -> bool:
-    """Простая защита от попадания в metadata несериализуемых объектов."""
     return isinstance(v, (str, int, float, bool, list, dict)) or v is None

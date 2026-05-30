@@ -88,12 +88,6 @@ class PipelineSettings:
     ``anchor_selector`` — какой из двух движков использует stage 2:
     ``"llm"`` (LLM выбирает один из top-K) или ``"reranker"``
     (cross-encoder ранжирует и берёт top-N).
-    ``prune_steps`` — список имён шагов для stage 4 (прунинга).
-                      ["single"] — одношаговый (дефолт, обратная совместимость).
-                      ["identify_core", "classify_neighbors"] — двухшаговый.
-                      Каждое имя соответствует паре промптов:
-                      prompts/prune_<step>_system.txt и prompts/prune_<step>_user.txt.
-                      Специальное имя "single" использует prune_system.txt / prune_user.txt.
     ``outputs_dir``     — куда писать per-sample JSON и debug JSONL.
                           Имя селектора автоматически дописывается как
                           подпапка (``.../llm/``, ``.../reranker/``), чтобы
@@ -106,7 +100,6 @@ class PipelineSettings:
     n_anchors: int
     max_subgraph_nodes: int
     anchor_selector: str
-    prune_steps: list[str]
     outputs_dir: Path
     llm_traces_dir: Path
 
@@ -274,25 +267,6 @@ def load_settings(cfg: Any | None = None) -> AnchorNeighborsSettings:
             f"превышать n_candidates ({n_candidates})"
         )
 
-    # ---- prune_steps ------------------------------------------------------
-    # Список имён шагов для stage 4. Дефолт: ["single"] (одношаговый прунинг).
-    prune_steps_raw = (
-        own_section.get("prune_steps") if hasattr(own_section, "get") else None
-    )
-    if prune_steps_raw is None:
-        prune_steps = ["single"]
-    elif isinstance(prune_steps_raw, list):
-        prune_steps = [str(s).strip() for s in prune_steps_raw if s]
-        if not prune_steps:
-            raise ConfigError(
-                "approaches.anchor_neighbors.prune_steps не должен быть пустым списком"
-            )
-    else:
-        raise ConfigError(
-            f"approaches.anchor_neighbors.prune_steps должен быть списком, "
-            f"получили {type(prune_steps_raw).__name__}"
-        )
-
     pipeline = PipelineSettings(
         n_candidates=n_candidates,
         n_anchors=n_anchors,
@@ -302,7 +276,6 @@ def load_settings(cfg: Any | None = None) -> AnchorNeighborsSettings:
             else None
         ),
         anchor_selector=anchor_selector,
-        prune_steps=prune_steps,
         outputs_dir=_opt_path("outputs_dir", "data/results/anchor_neighbors")
         / anchor_selector,
         llm_traces_dir=_opt_path(
